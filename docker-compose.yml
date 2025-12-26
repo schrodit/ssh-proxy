@@ -1,0 +1,59 @@
+---
+services:
+  # SSH Proxy Server
+  ssh-proxy:
+    build: .
+    command: ["./ssh-proxy", "-config", "/config.yaml", "-log-level", "debug"]
+    ports:
+    - "2222:2222"
+    volumes:
+    - ./test/test-config.yaml:/config.yaml:ro
+    depends_on:
+    - ssh-server-alice
+    - ssh-server-bob
+    networks:
+    - ssh-network
+  # Target SSH server for Alice
+  ssh-server-alice:
+    image: lscr.io/linuxserver/openssh-server:latest
+    hostname: alice
+    environment:
+    - PUID=1000
+    - PGID=1000
+    - TZ=Etc/UTC
+    - USER_NAME=alice
+    - USER_PASSWORD=alice-secret
+    - PASSWORD_ACCESS=true
+    volumes:
+    - alice_ssh_config:/config
+    ports:
+    - "2223:2222"
+    networks:
+      ssh-network:
+        aliases:
+        - ssh-server-alice
+  # Target SSH server for Bob
+  ssh-server-bob:
+    image: lscr.io/linuxserver/openssh-server:latest
+    hostname: bob
+    environment:
+    - PUID=1000
+    - PGID=1000
+    - TZ=Etc/UTC
+    - USER_NAME=bob
+    - USER_PASSWORD=bob-secret
+    - PASSWORD_ACCESS=true
+    volumes:
+    - bob_ssh_config:/config
+    ports:
+    - "2224:2222"
+    networks:
+      ssh-network:
+        aliases:
+        - ssh-server-bob
+volumes:
+  alice_ssh_config:
+  bob_ssh_config:
+networks:
+  ssh-network:
+    driver: bridge

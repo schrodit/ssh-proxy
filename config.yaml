@@ -1,0 +1,49 @@
+---
+# SSH Proxy Configuration - Routing rules based on username
+routes:
+# Alice: Password authentication only using bcrypt hash
+- username: "alice"
+  target:
+    host: "192.168.1.100"
+    port: 22
+    user: "alice"
+    auth:
+      type: "password"
+      password: "alice-target-password"
+  auth:
+  - type: "password"
+    # bcrypt hash of "alice-secret"
+    password_hash: "$2a$10$8K1p/a0dqbgX8K1p/a0dqOGp3lZ4wRcUWUzU8K1p/a0dq"
+    hash_type: "bcrypt"
+# Bob: Public key authentication only
+- username: "bob"
+  target:
+    host: "192.168.1.101"
+    port: 22
+    user: "bob"
+    auth:
+      type: "key"
+      key_path: "/path/to/bob/target/key"
+  auth:
+  - type: "key"
+    authorized_keys:
+    - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7vbqajDw+3X0... bob@example.com"
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0... bob@laptop"
+# Charlie: Multiple auth methods - multiple passwords AND public key
+- username: "charlie"
+  target:
+    host: "example.com"
+    port: 2222
+    user: "charlie"
+    auth:
+      type: "password"
+      password: "charlie-target-password"
+  auth:
+  - type: "password"
+    password: "charlie-password1"
+  - type: "password"
+    password_hash: "$2a$10$abcdefghijklmnop..."
+    hash_type: "bcrypt"
+  - type: "key"
+    authorized_keys:
+    - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"

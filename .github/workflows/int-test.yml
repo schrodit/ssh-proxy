@@ -1,0 +1,26 @@
+---
+name: int-test
+on:
+  push:
+    branches:
+    - main
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+
+    - name: Set up Docker Compose
+      uses: docker/setup-compose-action@v1
+      with:
+        version: latest
+
+    - name: Run test
+      run: |-
+        docker compose -f docker-compose.yml up -d --build
+        go test -v ./test/integration/...

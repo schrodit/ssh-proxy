@@ -1,0 +1,31 @@
+# Git files
+.git
+.gitignore
+
+# Build artifacts
+ssh-proxy
+*.exe
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+
+# IDE files
+.vscode
+.idea
+
+# Test files
+*_test.go
+
+# SSH keys
+host_key*
+*.pem
+*.key
+!*.pub
+
+# Docker config (we'll copy the regular config.yaml)
+config.docker.yaml

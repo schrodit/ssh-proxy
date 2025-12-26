@@ -1,0 +1,69 @@
+# SSH Config for SSH Proxy Test Setup
+# Place this file in ~/.ssh/config or use with ssh -F ssh_config
+
+# SSH Proxy Server - Direct connection for testing
+Host ssh-proxy
+		HostName localhost
+		Port 2222
+		User alice
+		StrictHostKeyChecking no
+		UserKnownHostsFile /dev/null
+		LogLevel ERROR
+
+# Alice via SSH Proxy
+Host alice-proxy
+		HostName localhost
+		Port 2222
+		User alice
+		StrictHostKeyChecking no
+		PubkeyAuthentication no
+		PreferredAuthentications password
+		UserKnownHostsFile /dev/null
+		LogLevel ERROR
+		# Connection will be proxied to ssh-server-alice
+
+# Bob via SSH Proxy
+Host bob-proxy
+		HostName localhost
+		Port 2222
+		User bob
+		StrictHostKeyChecking no
+		PubkeyAuthentication no
+		PreferredAuthentications password
+		UserKnownHostsFile /dev/null
+		LogLevel ERROR
+		# Connection will be proxied to ssh-server-bob
+
+# Charlie via SSH Proxy (supports both password and key auth)
+Host charlie-proxy
+		HostName localhost
+		Port 2222
+		User charlie
+		StrictHostKeyChecking no
+		UserKnownHostsFile /dev/null
+		LogLevel ERROR
+		# Connection will be proxied to ssh-server-alice (charlie routes to alice)
+
+# Direct connection to Alice's target server (Docker Compose)
+Host alice-direct
+		HostName localhost
+		Port 2223
+		User alice
+		StrictHostKeyChecking no
+		UserKnownHostsFile /dev/null
+		LogLevel ERROR
+
+# Direct connection to Bob's target server (Docker Compose)
+Host bob-direct
+		HostName localhost
+		Port 2224
+		User bob
+		StrictHostKeyChecking no
+		UserKnownHostsFile /dev/null
+		LogLevel ERROR
+
+# Example usage:
+# ssh alice-proxy    # Connect as alice through the proxy
+# ssh bob-proxy      # Connect as bob through the proxy
+# ssh alice-direct   # Connect directly to alice's target server
+# ssh bob-direct     # Connect directly to bob's target server

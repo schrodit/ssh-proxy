@@ -1,0 +1,11 @@
+ssh-proxy
+
+dev
+tmp
+
+# IDE files
+.vscode
+.idea
+
+# Test files
+*.test

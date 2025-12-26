@@ -1,0 +1,33 @@
+---
+name: check
+on:
+  push:
+    branches:
+    - main
+
+permissions:
+  # Required: allow read access to the content for analysis.
+  contents: read
+  # Optional: allow read access to pull requests. Use with `only-new-issues` option.
+  pull-requests: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+
+    - name: Install tools
+      run: make install-tools
+
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.7
+
+    - name: Check
+      run: make check
