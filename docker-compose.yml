@@ -15,7 +15,9 @@ services:
     - ssh-network
   # Target SSH server for Alice
   ssh-server-alice:
-    image: lscr.io/linuxserver/openssh-server:latest
+    build:
+      context: ./test
+      dockerfile: ssh-test-server.Dockerfile
     hostname: alice
     environment:
     - PUID=1000
@@ -26,6 +28,7 @@ services:
     - PASSWORD_ACCESS=true
     volumes:
     - alice_ssh_config:/config
+    - "./test/sshd_config:/config/sshd/sshd_config.d/tcp_forward_sshd.conf:ro"
     ports:
     - "2223:2222"
     networks:
@@ -34,7 +37,9 @@ services:
         - ssh-server-alice
   # Target SSH server for Bob
   ssh-server-bob:
-    image: lscr.io/linuxserver/openssh-server:latest
+    build:
+      context: ./test
+      dockerfile: ssh-test-server.Dockerfile
     hostname: bob
     environment:
     - PUID=1000
@@ -43,8 +48,10 @@ services:
     - USER_NAME=bob
     - USER_PASSWORD=bob-secret
     - PASSWORD_ACCESS=true
+    - LOG_STDOUT=true
     volumes:
     - bob_ssh_config:/config
+    - "./test/sshd_config:/config/sshd/sshd_config.d/tcp_forward_sshd.conf:ro"
     ports:
     - "2224:2222"
     networks:

@@ -5,10 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -278,6 +280,220 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 						GinkgoWriter.Printf("Warning: Failed to close session %d: %v\n", i+1, err)
 					}
 				}
+			})
+		})
+
+		Context("SSH Port Forwarding Tests", func() {
+			It("should successfully establish local port forwarding using Go SSH client", func() {
+				config := &ssh.ClientConfig{
+					User: "alice",
+					Auth: []ssh.AuthMethod{
+						ssh.Password("alice-secret"),
+					},
+					HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+					Timeout:         10 * time.Second,
+				}
+
+				By("Establishing SSH connection")
+				client, err := ssh.Dial("tcp", "localhost:2222", config)
+				Expect(err).NotTo(HaveOccurred(), "Should be able to connect via SSH")
+				defer func() {
+					if err := client.Close(); err != nil {
+						GinkgoWriter.Printf("Warning: Failed to close SSH client: %v\n", err)
+					}
+				}()
+
+				By("Starting a simple HTTP server on the remote host")
+				session, err := client.NewSession()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Start a simple Python HTTP server on port 8080 in background
+				err = session.Start("python3 -m http.server 8080 > /dev/null 2>&1 &")
+				Expect(err).NotTo(HaveOccurred(), "Should be able to start HTTP server")
+				session.Close()
+
+				// Give the server time to start
+				time.Sleep(2 * time.Second)
+
+				By("Setting up local port forwarding")
+				localPort := "18080"
+				remotePort := "8080"
+
+				listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%s", localPort))
+				Expect(err).NotTo(HaveOccurred(), "Should be able to create local listener")
+				defer listener.Close()
+
+				// Handle port forwarding in a goroutine
+				go func() {
+					defer GinkgoRecover()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						default:
+							localConn, err := listener.Accept()
+							if err != nil {
+								if ctx.Err() != nil {
+									return // Context cancelled
+								}
+								GinkgoWriter.Printf("Warning: Failed to accept local connection: %v\n", err)
+								continue
+							}
+
+							go func(localConn net.Conn) {
+								defer GinkgoRecover()
+								defer localConn.Close()
+
+								remoteConn, err := client.Dial("tcp", fmt.Sprintf("localhost:%s", remotePort))
+								if err != nil {
+									GinkgoWriter.Printf("Warning: Failed to dial remote: %v\n", err)
+									return
+								}
+								defer remoteConn.Close()
+
+								// Copy data in both directions
+								go func() {
+									defer GinkgoRecover()
+									_, err := io.Copy(localConn, remoteConn)
+									if err != nil {
+										GinkgoWriter.Printf("Debug: Copy from remote to local ended: %v\n", err)
+									}
+								}()
+
+								_, err = io.Copy(remoteConn, localConn)
+								if err != nil {
+									GinkgoWriter.Printf("Debug: Copy from local to remote ended: %v\n", err)
+								}
+							}(localConn)
+						}
+					}
+				}()
+
+				By("Testing the port forwarding connection")
+				Eventually(func() error {
+					conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%s", localPort), 2*time.Second)
+					if err != nil {
+						return err
+					}
+					defer conn.Close()
+
+					// Send a simple HTTP GET request
+					_, err = conn.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
+					if err != nil {
+						return err
+					}
+
+					// Read response to verify server is responding
+					buffer := make([]byte, 1024)
+					n, err := conn.Read(buffer)
+					if err != nil {
+						return err
+					}
+
+					response := string(buffer[:n])
+					if !strings.Contains(response, "HTTP/") {
+						return fmt.Errorf("unexpected response: %s", response)
+					}
+
+					return nil
+				}, "10s", "1s").Should(Succeed(), "Should be able to connect through port forwarding")
+
+				By("Cleaning up the HTTP server")
+				cleanupSession, err := client.NewSession()
+				if err == nil {
+					cleanupSession.Run("pkill -f 'python3 -m http.server'")
+					cleanupSession.Close()
+				}
+			})
+
+			It("should successfully establish local port forwarding using OpenSSH client", func() {
+				checkSshpassAvailable()
+
+				By("Setting up local port forwarding using OpenSSH client")
+
+				// Get absolute path to ssh_config
+				wd, err := os.Getwd()
+				Expect(err).NotTo(HaveOccurred())
+				projectRoot := filepath.Join(wd, "..")
+				sshConfigPath := filepath.Join(projectRoot, "ssh_config")
+
+				// Verify ssh_config exists
+				_, err = os.Stat(sshConfigPath)
+				Expect(err).NotTo(HaveOccurred(), "ssh_config should exist")
+
+				localPort := "18081"
+				remotePort := "8080"
+
+				// Start SSH with port forwarding in background
+				sshCmd := exec.CommandContext(ctx, "sshpass", "-p", "alice-secret", "ssh",
+					"-F", sshConfigPath,
+					"-L", fmt.Sprintf("%s:localhost:%s", localPort, remotePort),
+					"-N", // Don't execute remote commands
+					"alice-proxy")
+				sshCmd.Env = append(os.Environ(), "SSH_AUTH_SOCK=") // Disable SSH agent
+
+				err = sshCmd.Start()
+				Expect(err).NotTo(HaveOccurred(), "SSH port forwarding should start successfully")
+
+				defer func() {
+					if sshCmd.Process != nil {
+						sshCmd.Process.Kill()
+						sshCmd.Wait()
+					}
+				}()
+
+				// Give SSH time to establish the tunnel
+				time.Sleep(3 * time.Second)
+
+				By("Starting HTTP server on remote host")
+				serverCmd := exec.CommandContext(ctx, "sshpass", "-p", "alice-secret", "ssh",
+					"-F", sshConfigPath,
+					"alice-proxy",
+					"python3 -m http.server 8080 > /dev/null 2>&1 &")
+				serverCmd.Env = append(os.Environ(), "SSH_AUTH_SOCK=") // Disable SSH agent
+
+				serverOutput, err := serverCmd.CombinedOutput()
+				Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Should start HTTP server. Output: %s", serverOutput))
+
+				// Give the server time to start
+				time.Sleep(2 * time.Second)
+
+				By("Testing the port forwarding connection")
+				Eventually(func() error {
+					conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%s", localPort), 2*time.Second)
+					if err != nil {
+						return err
+					}
+					defer conn.Close()
+
+					// Send a simple HTTP GET request
+					_, err = conn.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
+					if err != nil {
+						return err
+					}
+
+					// Read response to verify server is responding
+					buffer := make([]byte, 1024)
+					n, err := conn.Read(buffer)
+					if err != nil {
+						return err
+					}
+
+					response := string(buffer[:n])
+					if !strings.Contains(response, "HTTP/") {
+						return fmt.Errorf("unexpected response: %s", response)
+					}
+
+					return nil
+				}, "15s", "1s").Should(Succeed(), "Should be able to connect through port forwarding")
+
+				By("Cleaning up the HTTP server")
+				cleanupCmd := exec.CommandContext(ctx, "sshpass", "-p", "alice-secret", "ssh",
+					"-F", sshConfigPath,
+					"alice-proxy",
+					"pkill -f 'python3 -m http.server' || true")
+				cleanupCmd.Env = append(os.Environ(), "SSH_AUTH_SOCK=")
+				cleanupCmd.Run()
 			})
 		})
 

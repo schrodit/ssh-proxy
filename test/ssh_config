@@ -50,6 +50,8 @@ Host alice-direct
 		Port 2223
 		User alice
 		StrictHostKeyChecking no
+		PubkeyAuthentication no
+		PreferredAuthentications password
 		UserKnownHostsFile /dev/null
 		LogLevel ERROR
 
@@ -59,6 +61,8 @@ Host bob-direct
 		Port 2224
 		User bob
 		StrictHostKeyChecking no
+		PubkeyAuthentication no
+		PreferredAuthentications password
 		UserKnownHostsFile /dev/null
 		LogLevel ERROR
 
