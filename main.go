@@ -56,13 +56,19 @@ func main() {
 	logger := configureLogger(*logLevel, *logSource, *logJSON)
 	slog.SetDefault(logger)
 
-	cfg, err := config.Load(*configPath)
+	configManager, err := config.NewConfigManager(*configPath)
 	if err != nil {
 		slog.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
+	defer func() {
+		if err := configManager.Close(); err != nil {
+			slog.Error("Failed to close config manager", "error", err)
+			os.Exit(1)
+		}
+	}()
 
-	server := proxy.New(cfg, *host, *port, *hostKeyPath)
+	server := proxy.New(configManager, *host, *port, *hostKeyPath)
 	slog.Info("Starting SSH proxy server", "host", *host, "port", *port)
 	if err := server.Start(); err != nil {
 		slog.Error("Failed to start SSH proxy", "error", err)

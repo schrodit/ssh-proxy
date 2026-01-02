@@ -15,6 +15,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/schrodit/ssh-proxy/pkg/config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -44,6 +45,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 	})
 
 	AfterEach(func() {
+		By("Cancel context")
 		if cancel != nil {
 			cancel()
 		}
@@ -310,7 +312,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 				// Start a simple Python HTTP server on port 8080 in background
 				err = session.Start("python3 -m http.server 8080 > /dev/null 2>&1 &")
 				Expect(err).NotTo(HaveOccurred(), "Should be able to start HTTP server")
-				session.Close()
+				Expect(session.Close()).NotTo(HaveOccurred())
 
 				// Give the server time to start
 				time.Sleep(2 * time.Second)
@@ -321,7 +323,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 
 				listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%s", localPort))
 				Expect(err).NotTo(HaveOccurred(), "Should be able to create local listener")
-				defer listener.Close()
+				defer func() { _ = listener.Close() }()
 
 				// Handle port forwarding in a goroutine
 				go func() {
@@ -337,21 +339,19 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 									return // Context cancelled
 								}
 								GinkgoWriter.Printf("Warning: Failed to accept local connection: %v\n", err)
-								continue
+								return
 							}
 
 							go func(localConn net.Conn) {
 								defer GinkgoRecover()
-								defer localConn.Close()
+								defer func() { _ = localConn.Close() }()
 
 								remoteConn, err := client.Dial("tcp", fmt.Sprintf("localhost:%s", remotePort))
 								if err != nil {
 									GinkgoWriter.Printf("Warning: Failed to dial remote: %v\n", err)
 									return
 								}
-								defer remoteConn.Close()
-
-								// Copy data in both directions
+								defer func() { _ = remoteConn.Close() }()
 								go func() {
 									defer GinkgoRecover()
 									_, err := io.Copy(localConn, remoteConn)
@@ -375,7 +375,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 					if err != nil {
 						return err
 					}
-					defer conn.Close()
+					defer func() { _ = conn.Close() }()
 
 					// Send a simple HTTP GET request
 					_, err = conn.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
@@ -401,8 +401,10 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 				By("Cleaning up the HTTP server")
 				cleanupSession, err := client.NewSession()
 				if err == nil {
-					cleanupSession.Run("pkill -f 'python3 -m http.server'")
-					cleanupSession.Close()
+					Expect(cleanupSession.Run("pkill -f 'python3 -m http.server'")).NotTo(HaveOccurred())
+					if err := cleanupSession.Close(); err != nil {
+						GinkgoWriter.Printf("Warning: Failed to close cleanup session: %v\n", err)
+					}
 				}
 			})
 
@@ -437,8 +439,8 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 
 				defer func() {
 					if sshCmd.Process != nil {
-						sshCmd.Process.Kill()
-						sshCmd.Wait()
+						Expect(sshCmd.Process.Kill()).NotTo(HaveOccurred())
+						Expect(sshCmd.Wait()).NotTo(HaveOccurred())
 					}
 				}()
 
@@ -464,7 +466,9 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 					if err != nil {
 						return err
 					}
-					defer conn.Close()
+					defer func() {
+						Expect(conn.Close()).NotTo(HaveOccurred())
+					}()
 
 					// Send a simple HTTP GET request
 					_, err = conn.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
@@ -493,7 +497,105 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 					"alice-proxy",
 					"pkill -f 'python3 -m http.server' || true")
 				cleanupCmd.Env = append(os.Environ(), "SSH_AUTH_SOCK=")
-				cleanupCmd.Run()
+				Expect(cleanupCmd.Run()).NotTo(HaveOccurred())
+			})
+		})
+
+		Context("Configuration Reload Tests", func() {
+			It("should reload configuration when config file changes", func() {
+				By("Creating a temporary config file")
+
+				tempConfig := `routes:
+- username: testuser
+  target:
+    host: localhost
+    port: 22
+    user: testuser
+    auth:
+      type: password
+      password: testuser-secret
+  auth:
+  - type: password
+    password: testuser-password
+`
+
+				tempFile, err := os.CreateTemp("", "test-config-*.yaml")
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(os.Remove(tempFile.Name())).NotTo(HaveOccurred())
+				}()
+
+				_, err = tempFile.WriteString(tempConfig)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tempFile.Close()).NotTo(HaveOccurred())
+
+				By("Creating a ConfigManager")
+				configManager, err := config.NewConfigManager(tempFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(configManager.Close()).NotTo(HaveOccurred())
+				}()
+
+				By("Verifying initial config")
+				initialConfig := configManager.GetConfig()
+				Expect(len(initialConfig.Routes)).To(Equal(1))
+				Expect(initialConfig.Routes[0].Username).To(Equal("testuser"))
+
+				By("Testing concurrent access to route map")
+				for i := 0; i < 5; i++ {
+					routeMap := configManager.GetRouteMap()
+					Expect(len(routeMap)).To(Equal(1))
+					Expect(routeMap["testuser"]).NotTo(BeNil())
+				}
+
+				By("Modifying the config file")
+				newConfig := `routes:
+- username: testuser
+  target:
+    host: localhost
+    port: 22
+    user: testuser
+    auth:
+      type: password
+      password: testuser-secret
+  auth:
+  - type: password
+    password: testuser-password
+- username: newuser
+  target:
+    host: localhost
+    port: 22
+    user: newuser
+    auth:
+      type: password
+      password: newuser-secret
+  auth:
+  - type: password
+    password: newuser-password
+`
+
+				err = os.WriteFile(tempFile.Name(), []byte(newConfig), 0644)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Waiting for config update notification")
+				Eventually(func() int {
+					return len(configManager.GetConfig().Routes)
+				}, "5s", "100ms").Should(Equal(2), "Config should be reloaded with 2 routes")
+
+				By("Verifying the updated config")
+				updatedConfig := configManager.GetConfig()
+				Expect(len(updatedConfig.Routes)).To(Equal(2))
+
+				routeMap := configManager.GetRouteMap()
+				Expect(len(routeMap)).To(Equal(2))
+				Expect(routeMap["testuser"]).NotTo(BeNil())
+				Expect(routeMap["newuser"]).NotTo(BeNil())
+
+				By("Testing concurrent access after config update")
+				for i := 0; i < 5; i++ {
+					routeMap := configManager.GetRouteMap()
+					Expect(len(routeMap)).To(Equal(2))
+				}
 			})
 		})
 

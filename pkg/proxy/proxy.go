@@ -25,29 +25,21 @@ var tracer = otel.Tracer("ssh-proxy")
 
 // SSHProxy represents an SSH proxy server
 type SSHProxy struct {
-	config       *config.Config
-	host         string
-	port         int
-	hostKeyPath  string
-	hostKey      ssh.Signer
-	routeMap     map[string]*config.Route
-	serverConfig *ssh.ServerConfig
+	configManager *config.ConfigManager
+	host          string
+	port          int
+	hostKeyPath   string
+	hostKey       ssh.Signer
+	serverConfig  *ssh.ServerConfig
 }
 
 // New creates a new SSH proxy instance
-func New(cfg *config.Config, host string, port int, hostKeyPath string) *SSHProxy {
+func New(configManager *config.ConfigManager, host string, port int, hostKeyPath string) *SSHProxy {
 	proxy := &SSHProxy{
-		config:      cfg,
-		host:        host,
-		port:        port,
-		hostKeyPath: hostKeyPath,
-		routeMap:    make(map[string]*config.Route),
-	}
-
-	// Build route map for fast username lookup
-	for i := range cfg.Routes {
-		route := &cfg.Routes[i]
-		proxy.routeMap[route.Username] = route
+		configManager: configManager,
+		host:          host,
+		port:          port,
+		hostKeyPath:   hostKeyPath,
 	}
 
 	// Load or generate host key
@@ -117,7 +109,8 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 
 	// Get the authenticated username
 	username := sshConn.User()
-	route, exists := p.routeMap[username]
+	routeMap := p.configManager.GetRouteMap()
+	route, exists := routeMap[username]
 	if !exists {
 		slog.Warn("No route found for user", "username", username)
 		return
@@ -148,7 +141,8 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 
 func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 	username := conn.User()
-	route, exists := p.routeMap[username]
+	routeMap := p.configManager.GetRouteMap()
+	route, exists := routeMap[username]
 	slog.Debug("Password auth attempt", "username", username)
 	if !exists {
 		return nil, fmt.Errorf("user not found")
@@ -188,7 +182,8 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 
 func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	username := conn.User()
-	route, exists := p.routeMap[username]
+	routeMap := p.configManager.GetRouteMap()
+	route, exists := routeMap[username]
 	slog.Debug("Public key auth attempt", "username", username)
 	if !exists {
 		return nil, fmt.Errorf("user not found")

@@ -3,8 +3,11 @@ module github.com/schrodit/ssh-proxy
 go 1.25
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
+	github.com/minio/sha256-simd v1.0.1
 	github.com/onsi/ginkgo/v2 v2.27.3
 	github.com/onsi/gomega v1.38.3
+	go.opentelemetry.io/otel v1.39.0
 	golang.org/x/crypto v0.41.0
 	gopkg.in/yaml.v2 v2.4.0
 )
@@ -17,8 +20,8 @@ require (
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20250403155104-27863c87afa6 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.39.0 // indirect
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
