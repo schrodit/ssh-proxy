@@ -40,7 +40,16 @@ spec:
           {{- end }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["./ssh-proxy", "-config", "/proxy/config.yaml", "-log-level", "{{ .Values.proxy.logLevel }}"]
+          command: 
+          - "./ssh-proxy",
+          - "-config"
+          - "/proxy/config.yaml"
+          - "-port"
+          - "2222"
+          - "-health-port"
+          - "8080"
+          - "-log-level"
+          - "{{ .Values.proxy.logLevel }}"
           ports:
             - name: ssh
               containerPort: 2222
@@ -48,14 +57,14 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
-          {{- with .Values.livenessProbe }}
           livenessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.readinessProbe }}
+            httpGet:
+              path: /health
+              port: http
           readinessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            httpGet:
+              path: /ready
+              port: http
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
