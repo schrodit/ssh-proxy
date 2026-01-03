@@ -1,0 +1,192 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/schrodit/ssh-proxy
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+proxy:
+  lolLevel: "info"
+  config: {}
+    # # SSH Proxy Configuration - Routing rules based on username
+    # routes:
+    # # Alice: Password authentication only using bcrypt hash
+    # - username: "alice"
+    #   target:
+    #     host: "192.168.1.100"
+    #     port: 22
+    #     user: "alice"
+    #     auth:
+    #       type: "password"
+    #       password: "alice-target-password"
+    #   auth:
+    #     - type: "password"
+    #       # bcrypt hash of "alice-secret"
+    #       password_hash: "$2a$10$8K1p/a0dqbgX8K1p/a0dqOGp3lZ4wRcUWUzU8K1p/a0dq"
+    #       hash_type: "bcrypt"
+    #
+    # # Bob: Public key authentication only
+    # - username: "bob"
+    #   target:
+    #     host: "192.168.1.101"
+    #     port: 22
+    #     user: "bob"
+    #     auth:
+    #       type: "key"
+    #       key_path: "/path/to/bob/target/key"
+    #   auth:
+    #     - type: "key"
+    #       authorized_keys:
+    #         - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7vbqajDw+3X0... bob@example.com"
+    #         - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0... bob@laptop"
+    #
+    # # Charlie: Multiple auth methods - passwords AND public key
+    # - username: "charlie"
+    #   target:
+    #     host: "example.com"
+    #     port: 2222
+    #     user: "charlie"
+    #     auth:
+    #       type: "password"
+    #       password: "charlie-target-password"
+    #   auth:
+    #     - type: "password"
+    #       password: "charlie-password1"
+    #     - type: "password"
+    #       password_hash: "$2a$10$abcdefghijklmnop..."
+    #       hash_type: "bcrypt"
+    #     - type: "key"
+    #       authorized_keys:
+    #         - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
+service:
+  # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+  type: ClusterIP
+  # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
+  port: 2222
+
+# This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+    # - secretName: chart-example-tls
+    #   hosts:
+    #     - chart-example.local
+
+# -- Expose the service via gateway-api HTTPRoute
+# Requires Gateway API resources and suitable controller installed within the cluster
+# (see: https://gateway-api.sigs.k8s.io/guides/)
+httpRoute:
+  # HTTPRoute enabled.
+  enabled: false
+  # HTTPRoute annotations.
+  annotations: {}
+  # Which Gateways this Route is attached to.
+  parentRefs:
+  - name: gateway
+    sectionName: http
+    # namespace: default
+  # Hostnames matching HTTP header.
+  hostnames:
+  - chart-example.local
+  # List of rules and filters applied.
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /headers
+  #   filters:
+  #   - type: RequestHeaderModifier
+  #     requestHeaderModifier:
+  #       set:
+  #       - name: My-Overwrite-Header
+  #         value: this-is-the-only-value
+  #       remove:
+  #       - User-Agent
+  # - matches:
+  #   - path:
+  #       type: PathPrefix
+  #       value: /echo
+  #     headers:
+  #     - name: version
+  #       value: v2
+
+resources: {}
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+# This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+
+# This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# Additional volumes on the output Deployment definition.
+volumes: []
+  # - name: foo
+  #   secret:
+  #     secretName: mysecret
+  #     optional: false
+
+# Additional volumeMounts on the output Deployment definition.
+volumeMounts: []
+  # - name: foo
+  #   mountPath: "/etc/foo"
+  #   readOnly: true
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
