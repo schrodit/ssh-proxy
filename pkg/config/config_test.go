@@ -34,6 +34,7 @@ var _ = Describe("Config Package", func() {
     host: example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: secret
@@ -55,6 +56,81 @@ var _ = Describe("Config Package", func() {
 			})
 		})
 
+		Context("with target host_key and insecure fields", func() {
+			It("should load host_key from config", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-secret
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Routes[0].Target.HostKey).To(Equal("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"))
+				Expect(config.Routes[0].Target.Insecure).To(BeFalse())
+			})
+
+			It("should load insecure flag from config", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-secret
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Routes[0].Target.Insecure).To(BeTrue())
+				Expect(config.Routes[0].Target.HostKey).To(BeEmpty())
+			})
+
+			It("should fail validation when neither host_key nor insecure is set", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-secret
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("must set either host_key or insecure: true"))
+			})
+		})
+
 		Context("with multiple routes and different auth types", func() {
 			It("should load all routes correctly", func() {
 				content := `routes:
@@ -63,6 +139,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: alice-secret
@@ -74,6 +151,7 @@ var _ = Describe("Config Package", func() {
     host: bob.example.com
     port: 2222
     user: bob
+    insecure: true
     auth:
       type: key
       key_path: /path/to/key
@@ -206,6 +284,7 @@ var _ = Describe("Config Package", func() {
     host: test.com
     port: 22
     user: test
+    insecure: true
     auth:
       type: password
       password: secret
@@ -259,6 +338,7 @@ var _ = Describe("Config Package", func() {
     host: example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: secret
@@ -305,6 +385,7 @@ var _ = Describe("Config Package", func() {
     host: example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: secret
@@ -344,6 +425,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: alice-secret
@@ -355,6 +437,7 @@ var _ = Describe("Config Package", func() {
     host: bob.example.com
     port: 22
     user: bob
+    insecure: true
     auth:
       type: password
       password: bob-secret
@@ -419,6 +502,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: alice-secret
@@ -453,6 +537,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: alice-secret
@@ -464,6 +549,7 @@ var _ = Describe("Config Package", func() {
     host: bob.example.com
     port: 22
     user: bob
+    insecure: true
     auth:
       type: password
       password: bob-secret
@@ -494,6 +580,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: alice-secret
@@ -547,6 +634,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: secret
@@ -606,6 +694,7 @@ var _ = Describe("Config Package", func() {
     host: host%d.example.com
     port: 22
     user: user%d
+    insecure: true
     auth:
       type: password
       password: secret%d
@@ -693,6 +782,30 @@ var _ = Describe("Config Package", func() {
 				}
 			})
 		})
+
+		Context("Target struct", func() {
+			It("should support host_key field", func() {
+				target := Target{
+					Host:    "example.com",
+					Port:    22,
+					User:    "deploy",
+					HostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest...",
+				}
+				Expect(target.HostKey).To(Equal("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest..."))
+				Expect(target.Insecure).To(BeFalse())
+			})
+
+			It("should support insecure field", func() {
+				target := Target{
+					Host:     "example.com",
+					Port:     22,
+					User:     "deploy",
+					Insecure: true,
+				}
+				Expect(target.Insecure).To(BeTrue())
+				Expect(target.HostKey).To(BeEmpty())
+			})
+		})
 	})
 
 	Describe("UsernameRegex and FindRoute", func() {
@@ -718,6 +831,7 @@ var _ = Describe("Config Package", func() {
     host: "{{.Named.env}}-{{.Named.service}}.internal"
     port: 22
     user: deploy
+    insecure: true
     auth:
       type: password
       password: secret
@@ -742,6 +856,7 @@ var _ = Describe("Config Package", func() {
     host: example.com
     port: 22
     user: test
+    insecure: true
     auth:
       type: password
       password: secret
@@ -767,6 +882,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: secret
@@ -798,6 +914,7 @@ var _ = Describe("Config Package", func() {
     host: alice.example.com
     port: 22
     user: alice
+    insecure: true
     auth:
       type: password
       password: secret
@@ -828,6 +945,7 @@ var _ = Describe("Config Package", func() {
     host: "{{.Named.env}}-{{.Named.service}}.internal"
     port: 22
     user: deploy
+    insecure: true
     auth:
       type: password
       password: secret
@@ -867,6 +985,7 @@ var _ = Describe("Config Package", func() {
     host: "{{index .Groups 1}}-{{index .Groups 2}}.internal"
     port: 22
     user: deploy
+    insecure: true
     auth:
       type: password
       password: secret
@@ -900,6 +1019,7 @@ var _ = Describe("Config Package", func() {
     host: example.com
     port: 22
     user: deploy
+    insecure: true
     auth:
       type: password
       password: secret
@@ -928,6 +1048,7 @@ var _ = Describe("Config Package", func() {
     host: exact-host.internal
     port: 22
     user: deploy
+    insecure: true
     auth:
       type: password
       password: secret
@@ -939,6 +1060,7 @@ var _ = Describe("Config Package", func() {
     host: "{{.Named.env}}-{{.Named.service}}.internal"
     port: 22
     user: deploy
+    insecure: true
     auth:
       type: password
       password: secret

@@ -26,12 +26,13 @@ var tracer = otel.Tracer("ssh-proxy")
 // resolvedTarget contains all resolved values needed to connect to a target SSH server.
 // This decouples the connection logic from the config types and template resolution.
 type resolvedTarget struct {
-	Host         string
-	Port         int
-	User         string
-	AuthType     string
-	AuthPassword string
-	AuthKeyPath  string
+	Host            string
+	Port            int
+	User            string
+	AuthType        string
+	AuthPassword    string
+	AuthKeyPath     string
+	HostKeyCallback ssh.HostKeyCallback
 }
 
 // SSHProxy represents an SSH proxy server
@@ -144,6 +145,14 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 		AuthPassword: route.Target.Auth.Password,
 		AuthKeyPath:  route.Target.Auth.KeyPath,
 	}
+
+	// Build host key callback
+	hostKeyCallback, err := buildHostKeyCallback(route.Target)
+	if err != nil {
+		slog.Error("Failed to build host key callback", "error", err, "username", username)
+		return
+	}
+	target.HostKeyCallback = hostKeyCallback
 
 	slog.Info("User authenticated, routing to target", "username", username, "target_host", target.Host, "target_port", target.Port)
 
@@ -266,7 +275,7 @@ func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {
 	config := &ssh.ClientConfig{
 		User:            target.User,
 		Auth:            auth,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // In production, use proper host key verification
+		HostKeyCallback: target.HostKeyCallback,
 	}
 
 	conn, err := ssh.Dial("tcp", targetAddr, config)
@@ -275,6 +284,21 @@ func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+// buildHostKeyCallback creates an ssh.HostKeyCallback based on the target configuration.
+// Config validation guarantees that either host_key or insecure is set.
+func buildHostKeyCallback(target config.Target) (ssh.HostKeyCallback, error) {
+	if target.HostKey != "" {
+		expected, _, _, _, err := ssh.ParseAuthorizedKey([]byte(target.HostKey))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse target host_key %q: %w", target.HostKey, err)
+		}
+		return ssh.FixedHostKey(expected), nil
+	}
+
+	// insecure must be true at this point (enforced by config validation)
+	return ssh.InsecureIgnoreHostKey(), nil
 }
 
 func (p *SSHProxy) proxySSHConnection(clientConn ssh.Conn, targetConn ssh.Conn, chans <-chan ssh.NewChannel, reqs <-chan *ssh.Request) {

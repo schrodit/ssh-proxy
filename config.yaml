@@ -7,6 +7,8 @@ routes:
     host: "192.168.1.100"
     port: 22
     user: "alice"
+    # Known host key for secure verification
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0..."
     auth:
       type: "password"
       password: "alice-target-password"
@@ -21,6 +23,8 @@ routes:
     host: "192.168.1.101"
     port: 22
     user: "bob"
+    # Explicitly skip host key verification (not recommended for production)
+    insecure: true
     auth:
       type: "key"
       key_path: "/path/to/bob/target/key"

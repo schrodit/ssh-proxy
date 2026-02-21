@@ -6,6 +6,7 @@ routes:
     host: "ssh-server-alice"
     port: 2222
     user: "alice"
+    insecure: true
     auth:
       type: "password"
       password: "alice-secret"
@@ -18,6 +19,7 @@ routes:
     host: "ssh-server-bob"
     port: 2222
     user: "bob"
+    insecure: true
     auth:
       type: "password"
       password: "bob-secret"
@@ -30,6 +32,7 @@ routes:
     host: "ssh-server-alice"
     port: 2222
     user: "alice"
+    insecure: true
     auth:
       type: "password"
       password: "alice-secret"

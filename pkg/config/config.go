@@ -48,10 +48,12 @@ type AuthMethod struct {
 
 // Target represents the target SSH server configuration
 type Target struct {
-	Host string     `yaml:"host"`
-	Port int        `yaml:"port"`
-	User string     `yaml:"user"`
-	Auth TargetAuth `yaml:"auth"`
+	Host     string     `yaml:"host"`
+	Port     int        `yaml:"port"`
+	User     string     `yaml:"user"`
+	Auth     TargetAuth `yaml:"auth"`
+	HostKey  string     `yaml:"host_key"` // known public key of the target server (e.g. "ssh-ed25519 AAAA..."); required if insecure is false
+	Insecure bool       `yaml:"insecure"` // skip host key verification; must be explicitly true if host_key is not set
 }
 
 // TargetAuth represents authentication configuration for target server connections
@@ -287,24 +289,35 @@ func LoadWithData(path string) (*Config, []byte, error) {
 		return nil, nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Compile regex patterns for routes that use usernameRegex
-	if err := config.CompileRegexPatterns(); err != nil {
+	// Validate and compile config
+	if err := config.Validate(); err != nil {
 		return nil, nil, err
 	}
 
 	return &config, data, nil
 }
 
-// CompileRegexPatterns compiles all usernameRegex patterns in the config
-func (c *Config) CompileRegexPatterns() error {
+// Validate validates the configuration and compiles regex patterns.
+func (c *Config) Validate() error {
 	for i := range c.Routes {
 		route := &c.Routes[i]
+
+		// Compile usernameRegex if set
 		if route.UsernameRegex != "" {
 			re, err := regexp.Compile(route.UsernameRegex)
 			if err != nil {
 				return fmt.Errorf("failed to compile usernameRegex %q for route %d: %w", route.UsernameRegex, i, err)
 			}
 			route.compiledRegex = re
+		}
+
+		// Validate that either host_key or insecure is explicitly set
+		if route.Target.HostKey == "" && !route.Target.Insecure {
+			name := route.Username
+			if name == "" {
+				name = route.UsernameRegex
+			}
+			return fmt.Errorf("route %d (%s): target must set either host_key or insecure: true", i, name)
 		}
 	}
 	return nil

@@ -8,13 +8,12 @@ A Go-based SSH proxy server that routes connections to different SSH targets bas
 - **Regex-based routing**: Match usernames with regex patterns and use captured groups in target host templates
 - **Dynamic host templates**: Use Go templates in the target host field with regex capture groups
 - **Multiple authentication methods**: Support for both password and public key authentication
+- **Target host key verification**: Require explicit `host_key` or `insecure: true` per target for secure connections
 - **Automatic host key generation**: Generates host keys automatically if not provided
 
 ## Planned Features
 - **Improve security**
-  - Proper host key validation
-  - Do not store passwords in plain text
-- **Helm Chart**: Add a helm chart deployment
+  - Do not store passwords in plain text/Support secret stores or external authentication
 - **Full SSH protocol support**: Proxy all SSH features including channels, port forwarding, and file transfers
   - including tests for all features
 - **Dynamic Routes**: Make it possible to dynamically add, remove, update routes
@@ -42,6 +41,8 @@ routes:
       host: "192.168.1.100"
       port: 22
       user: "alice"
+      # Known host key for secure verification
+      host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0..."
       auth:
         type: "password"
         password: "alice-target-password"
@@ -51,12 +52,14 @@ routes:
         password_hash: "$2a$10$8K1p/a0dqbgX8K1p/a0dqOGp3lZ4wRcUWUzU8K1p/a0dq"
         hash_type: "bcrypt"
   
-  # Bob: Public key authentication only
+  # Bob: Public key authentication only (insecure target)
   - username: "bob"
     target:
       host: "192.168.1.101"
       port: 22
       user: "bob"
+      # Explicitly skip host key verification (not recommended for production)
+      insecure: true
       auth:
         type: "key"
         key_path: "/path/to/bob/target/key"
@@ -72,6 +75,7 @@ routes:
       host: "example.com"
       port: 2222
       user: "charlie"
+      insecure: true
       auth:
         type: "password"
         password: "charlie-target-password"
@@ -91,6 +95,7 @@ routes:
       host: "{{.Named.env}}-{{.Named.service}}.internal"
       port: 22
       user: "deploy"
+      insecure: true
       auth:
         type: "password"
         password: "deploy-secret"
@@ -107,12 +112,16 @@ routes:
 - `target.host`: Target SSH server hostname/IP (supports Go templates when using `usernameRegex`)
 - `target.port`: Target SSH server port (default: 22)
 - `target.user`: Username to use when connecting to the target server
+- `target.host_key`: Known public key of the target server for host key verification (e.g., `"ssh-ed25519 AAAA..."`). Required if `insecure` is not set.
+- `target.insecure`: Set to `true` to skip host key verification. Required if `host_key` is not set. **Not recommended for production.**
 - `target.auth.type`: Authentication type for connecting to target ("password" or "key")
 - `target.auth.password`: Password for target server authentication
 - `target.auth.key_path`: Path to private key for target server authentication
 - `auth`: Array of authentication methods for client connections
 
 **Note**: Use either `username` (exact match) or `usernameRegex` (regex match) per route, not both. Exact matches are evaluated before regex matches.
+
+**Note**: Every target must explicitly set either `host_key` or `insecure: true`. The configuration will fail to load if neither is specified.
 
 #### Host Templates
 
@@ -302,7 +311,7 @@ ssh bob@localhost -p 2222
 
 ## Security Considerations
 
-- **Host Key Verification**: The current implementation uses `ssh.InsecureIgnoreHostKey()` for simplicity. In production, implement proper host key verification
+- **Target Host Key Verification**: Each target must explicitly configure `host_key` (the server's public key) for secure verification, or set `insecure: true` to skip verification. Configuration loading fails if neither is specified, preventing accidental insecure deployments.
 - **Authentication Storage**: Store authentication credentials securely (e.g., encrypted configuration, external auth providers)
 - **Access Control**: Implement additional access controls and logging as needed
 - **Key Management**: Securely manage and rotate SSH keys
