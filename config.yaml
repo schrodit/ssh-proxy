@@ -47,3 +47,16 @@ routes:
   - type: "key"
     authorized_keys:
     - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"
+# Dynamic routing: Match usernames like "dev-myapp", "prod-api", etc.
+# The regex captures named groups that can be used in the host template.
+- usernameRegex: "^(?P<env>dev|staging|prod)-(?P<service>.+)$"
+  target:
+    host: "{{.Named.env}}-{{.Named.service}}.internal"
+    port: 22
+    user: "deploy"
+    auth:
+      type: "password"
+      password: "deploy-secret"
+  auth:
+  - type: "password"
+    password: "shared-secret"

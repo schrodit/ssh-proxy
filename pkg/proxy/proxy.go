@@ -23,6 +23,17 @@ import (
 
 var tracer = otel.Tracer("ssh-proxy")
 
+// resolvedTarget contains all resolved values needed to connect to a target SSH server.
+// This decouples the connection logic from the config types and template resolution.
+type resolvedTarget struct {
+	Host         string
+	Port         int
+	User         string
+	AuthType     string
+	AuthPassword string
+	AuthKeyPath  string
+}
+
 // SSHProxy represents an SSH proxy server
 type SSHProxy struct {
 	configManager *config.ConfigManager
@@ -108,18 +119,36 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 	}()
 
 	// Get the authenticated username
+	// TODO: the target route can simply be cached since its deterministic.
+	//       Consider when we run into perf issues.
 	username := sshConn.User()
-	routeMap := p.configManager.GetRouteMap()
-	route, exists := routeMap[username]
-	if !exists {
+	match := p.configManager.FindRoute(username)
+	if match == nil {
 		slog.Warn("No route found for user", "username", username)
 		return
 	}
+	route := match.Route
 
-	slog.Info("User authenticated, routing to target", "username", username, "target_host", route.Target.Host, "target_port", route.Target.Port)
+	// Resolve host template if applicable
+	resolvedHost, err := config.ResolveHost(route.Target.Host, match, username)
+	if err != nil {
+		slog.Error("Failed to resolve target host template", "error", err, "username", username)
+		return
+	}
+
+	target := &resolvedTarget{
+		Host:         resolvedHost,
+		Port:         route.Target.Port,
+		User:         route.Target.User,
+		AuthType:     route.Target.Auth.Type,
+		AuthPassword: route.Target.Auth.Password,
+		AuthKeyPath:  route.Target.Auth.KeyPath,
+	}
+
+	slog.Info("User authenticated, routing to target", "username", username, "target_host", target.Host, "target_port", target.Port)
 
 	// Establish connection to target SSH server
-	targetConn, err := p.connectToTarget(route)
+	targetConn, err := p.connectToTarget(target)
 	if err != nil {
 		slog.Error("Failed to connect to target", "error", err)
 		return
@@ -141,12 +170,12 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 
 func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 	username := conn.User()
-	routeMap := p.configManager.GetRouteMap()
-	route, exists := routeMap[username]
+	match := p.configManager.FindRoute(username)
 	slog.Debug("Password auth attempt", "username", username)
-	if !exists {
+	if match == nil {
 		return nil, fmt.Errorf("user not found")
 	}
+	route := match.Route
 
 	// Check all auth methods for password authentication
 	for _, authMethod := range route.Auth {
@@ -182,12 +211,12 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 
 func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	username := conn.User()
-	routeMap := p.configManager.GetRouteMap()
-	route, exists := routeMap[username]
+	match := p.configManager.FindRoute(username)
 	slog.Debug("Public key auth attempt", "username", username)
-	if !exists {
+	if match == nil {
 		return nil, fmt.Errorf("user not found")
 	}
+	route := match.Route
 
 	// Check all auth methods for public key authentication
 	for _, authMethod := range route.Auth {
@@ -212,18 +241,18 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 	return nil, fmt.Errorf("public key authentication failed")
 }
 
-func (p *SSHProxy) connectToTarget(route *config.Route) (ssh.Conn, error) {
-	targetAddr := fmt.Sprintf("%s:%d", route.Target.Host, route.Target.Port)
+func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {
+	targetAddr := fmt.Sprintf("%s:%d", target.Host, target.Port)
 
 	// Configure client based on target auth type
 	var auth []ssh.AuthMethod
-	switch route.Target.Auth.Type {
+	switch target.AuthType {
 	case "password":
 		auth = []ssh.AuthMethod{
-			ssh.Password(route.Target.Auth.Password),
+			ssh.Password(target.AuthPassword),
 		}
 	case "key":
-		key, err := loadPrivateKey(route.Target.Auth.KeyPath)
+		key, err := loadPrivateKey(target.AuthKeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load private key: %w", err)
 		}
@@ -231,11 +260,11 @@ func (p *SSHProxy) connectToTarget(route *config.Route) (ssh.Conn, error) {
 			ssh.PublicKeys(key),
 		}
 	default:
-		return nil, fmt.Errorf("unsupported target auth type: %s", route.Target.Auth.Type)
+		return nil, fmt.Errorf("unsupported target auth type: %s", target.AuthType)
 	}
 
 	config := &ssh.ClientConfig{
-		User:            route.Target.User,
+		User:            target.User,
 		Auth:            auth,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // In production, use proper host key verification
 	}

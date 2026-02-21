@@ -664,6 +664,16 @@ var _ = Describe("Config Package", func() {
 				Expect(route.Auth[1].Type).To(Equal("key"))
 				Expect(route.Auth[2].Type).To(Equal("password_hash"))
 			})
+
+			It("should support usernameRegex field", func() {
+				route := Route{
+					UsernameRegex: `^(?P<env>dev|prod)-(?P<service>.+)$`,
+					Auth: []AuthMethod{
+						{Type: "password", Password: "secret"},
+					},
+				}
+				Expect(route.UsernameRegex).To(Equal(`^(?P<env>dev|prod)-(?P<service>.+)$`))
+			})
 		})
 
 		Context("TargetAuth struct", func() {
@@ -681,6 +691,362 @@ var _ = Describe("Config Package", func() {
 				for _, authType := range authTypes {
 					Expect(authType.auth.Type).To(Equal(authType.expected))
 				}
+			})
+		})
+	})
+
+	Describe("UsernameRegex and FindRoute", func() {
+		var tmpFile *os.File
+
+		BeforeEach(func() {
+			var err error
+			tmpFile, err = os.CreateTemp("", "config-regex-test-*.yaml")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if tmpFile != nil {
+				Expect(os.Remove(tmpFile.Name())).NotTo(HaveOccurred())
+			}
+		})
+
+		Context("loading config with usernameRegex", func() {
+			It("should compile regex patterns on load", func() {
+				content := `routes:
+- usernameRegex: "^(?P<env>dev|prod)-(?P<service>.+)$"
+  target:
+    host: "{{.Named.env}}-{{.Named.service}}.internal"
+    port: 22
+    user: deploy
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: my-secret
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Routes).To(HaveLen(1))
+				Expect(config.Routes[0].UsernameRegex).To(Equal(`^(?P<env>dev|prod)-(?P<service>.+)$`))
+			})
+
+			It("should fail on invalid regex", func() {
+				content := `routes:
+- usernameRegex: "[invalid"
+  target:
+    host: example.com
+    port: 22
+    user: test
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: test
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("failed to compile usernameRegex"))
+			})
+		})
+
+		Context("FindRoute with exact username", func() {
+			It("should match exact username routes", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: alice.example.com
+    port: 22
+    user: alice
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-password
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				cm, err := NewConfigManager(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(cm.Close()).NotTo(HaveOccurred())
+				}()
+
+				match := cm.FindRoute("alice")
+				Expect(match).NotTo(BeNil())
+				Expect(match.Route.Username).To(Equal("alice"))
+				Expect(match.Groups).To(BeNil())
+				Expect(match.Named).To(BeNil())
+			})
+
+			It("should return nil for non-matching username", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: alice.example.com
+    port: 22
+    user: alice
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-password
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				cm, err := NewConfigManager(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(cm.Close()).NotTo(HaveOccurred())
+				}()
+
+				match := cm.FindRoute("bob")
+				Expect(match).To(BeNil())
+			})
+		})
+
+		Context("FindRoute with usernameRegex", func() {
+			It("should match regex routes with named groups", func() {
+				content := `routes:
+- usernameRegex: "^(?P<env>dev|staging|prod)-(?P<service>.+)$"
+  target:
+    host: "{{.Named.env}}-{{.Named.service}}.internal"
+    port: 22
+    user: deploy
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: my-password
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				cm, err := NewConfigManager(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(cm.Close()).NotTo(HaveOccurred())
+				}()
+
+				match := cm.FindRoute("dev-myapp")
+				Expect(match).NotTo(BeNil())
+				Expect(match.Groups).To(HaveLen(3)) // full match + 2 groups
+				Expect(match.Groups[0]).To(Equal("dev-myapp"))
+				Expect(match.Groups[1]).To(Equal("dev"))
+				Expect(match.Groups[2]).To(Equal("myapp"))
+				Expect(match.Named).To(HaveKeyWithValue("env", "dev"))
+				Expect(match.Named).To(HaveKeyWithValue("service", "myapp"))
+
+				match2 := cm.FindRoute("prod-backend")
+				Expect(match2).NotTo(BeNil())
+				Expect(match2.Named).To(HaveKeyWithValue("env", "prod"))
+				Expect(match2.Named).To(HaveKeyWithValue("service", "backend"))
+			})
+
+			It("should match regex with positional groups (no named groups)", func() {
+				content := `routes:
+- usernameRegex: "^(dev|prod)-(.+)$"
+  target:
+    host: "{{index .Groups 1}}-{{index .Groups 2}}.internal"
+    port: 22
+    user: deploy
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: my-password
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				cm, err := NewConfigManager(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(cm.Close()).NotTo(HaveOccurred())
+				}()
+
+				match := cm.FindRoute("dev-frontend")
+				Expect(match).NotTo(BeNil())
+				Expect(match.Groups).To(HaveLen(3))
+				Expect(match.Groups[0]).To(Equal("dev-frontend"))
+				Expect(match.Groups[1]).To(Equal("dev"))
+				Expect(match.Groups[2]).To(Equal("frontend"))
+				Expect(match.Named).To(BeEmpty())
+			})
+
+			It("should not match if regex does not match", func() {
+				content := `routes:
+- usernameRegex: "^(?P<env>dev|prod)-(?P<service>.+)$"
+  target:
+    host: example.com
+    port: 22
+    user: deploy
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: my-password
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				cm, err := NewConfigManager(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(cm.Close()).NotTo(HaveOccurred())
+				}()
+
+				match := cm.FindRoute("nope-nope")
+				Expect(match).To(BeNil())
+			})
+
+			It("should prefer exact match over regex match", func() {
+				content := `routes:
+- username: dev-myapp
+  target:
+    host: exact-host.internal
+    port: 22
+    user: deploy
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: my-password
+- usernameRegex: "^(?P<env>dev|prod)-(?P<service>.+)$"
+  target:
+    host: "{{.Named.env}}-{{.Named.service}}.internal"
+    port: 22
+    user: deploy
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: my-password
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				cm, err := NewConfigManager(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					Expect(cm.Close()).NotTo(HaveOccurred())
+				}()
+
+				// Exact match should win
+				match := cm.FindRoute("dev-myapp")
+				Expect(match).NotTo(BeNil())
+				Expect(match.Route.Username).To(Equal("dev-myapp"))
+				Expect(match.Route.Target.Host).To(Equal("exact-host.internal"))
+				Expect(match.Groups).To(BeNil())
+
+				// Regex match should work for non-exact
+				match2 := cm.FindRoute("prod-myapp")
+				Expect(match2).NotTo(BeNil())
+				Expect(match2.Named).To(HaveKeyWithValue("env", "prod"))
+			})
+		})
+	})
+
+	Describe("ResolveHost", func() {
+		Context("with static host (no template)", func() {
+			It("should return the host as-is", func() {
+				match := &RouteMatch{
+					Route:  &Route{},
+					Groups: nil,
+					Named:  nil,
+				}
+				host, err := ResolveHost("example.com", match, "alice")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(host).To(Equal("example.com"))
+			})
+		})
+
+		Context("with Go template using named groups", func() {
+			It("should resolve template with named groups", func() {
+				match := &RouteMatch{
+					Route:  &Route{},
+					Groups: []string{"dev-myapp", "dev", "myapp"},
+					Named:  map[string]string{"env": "dev", "service": "myapp"},
+				}
+				host, err := ResolveHost("{{.Named.env}}-{{.Named.service}}.internal", match, "dev-myapp")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(host).To(Equal("dev-myapp.internal"))
+			})
+		})
+
+		Context("with Go template using positional groups", func() {
+			It("should resolve template with index function", func() {
+				match := &RouteMatch{
+					Route:  &Route{},
+					Groups: []string{"dev-myapp", "dev", "myapp"},
+					Named:  map[string]string{},
+				}
+				host, err := ResolveHost("{{index .Groups 1}}.{{index .Groups 2}}.internal", match, "dev-myapp")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(host).To(Equal("dev.myapp.internal"))
+			})
+		})
+
+		Context("with Go template using Username", func() {
+			It("should resolve template with username", func() {
+				match := &RouteMatch{
+					Route:  &Route{},
+					Groups: nil,
+					Named:  nil,
+				}
+				host, err := ResolveHost("{{.Username}}.internal", match, "alice")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(host).To(Equal("alice.internal"))
+			})
+		})
+
+		Context("with invalid template", func() {
+			It("should return an error", func() {
+				match := &RouteMatch{
+					Route:  &Route{},
+					Groups: nil,
+					Named:  nil,
+				}
+				_, err := ResolveHost("{{.Invalid", match, "alice")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("failed to parse host template"))
+			})
+		})
+
+		Context("with template resolving to empty string", func() {
+			It("should return an error", func() {
+				match := &RouteMatch{
+					Route:  &Route{},
+					Groups: nil,
+					Named:  map[string]string{},
+				}
+				_, err := ResolveHost("{{if .Named.nonexistent}}{{.Named.nonexistent}}{{end}}", match, "alice")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("resolved to empty string"))
 			})
 		})
 	})

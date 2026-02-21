@@ -1,10 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"sync"
+	"text/template"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/minio/sha256-simd"
@@ -18,9 +21,20 @@ type Config struct {
 
 // Route represents a routing rule for a specific username
 type Route struct {
-	Username string       `yaml:"username"`
-	Target   Target       `yaml:"target"`
-	Auth     []AuthMethod `yaml:"auth"`
+	Username      string       `yaml:"username"`
+	UsernameRegex string       `yaml:"usernameRegex,omitempty"`
+	Target        Target       `yaml:"target"`
+	Auth          []AuthMethod `yaml:"auth"`
+
+	// compiledRegex is the compiled version of UsernameRegex (not serialized)
+	compiledRegex *regexp.Regexp
+}
+
+// RouteMatch contains information about a matched route including any captured groups
+type RouteMatch struct {
+	Route  *Route
+	Groups []string          // positional groups (index 0 = full match)
+	Named  map[string]string // named capture groups
 }
 
 // AuthMethod represents an authentication method for client connections
@@ -103,9 +117,108 @@ func (cm *ConfigManager) GetRouteMap() map[string]*Route {
 	routeMap := make(map[string]*Route)
 	for i := range cm.config.Routes {
 		route := &cm.config.Routes[i]
-		routeMap[route.Username] = route
+		if route.Username != "" {
+			routeMap[route.Username] = route
+		}
 	}
 	return routeMap
+}
+
+// FindRoute finds a matching route for the given username.
+// It first checks for exact username matches, then falls back to regex matching.
+// Returns a RouteMatch with the matched route and any captured groups, or nil if no match.
+func (cm *ConfigManager) FindRoute(username string) *RouteMatch {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	// First pass: exact username match
+	for i := range cm.config.Routes {
+		route := &cm.config.Routes[i]
+		if route.Username != "" && route.Username == username {
+			return &RouteMatch{
+				Route:  route,
+				Groups: nil,
+				Named:  nil,
+			}
+		}
+	}
+
+	// Second pass: regex match
+	for i := range cm.config.Routes {
+		route := &cm.config.Routes[i]
+		if route.compiledRegex == nil {
+			continue
+		}
+
+		matches := route.compiledRegex.FindStringSubmatch(username)
+		if matches == nil {
+			continue
+		}
+
+		named := make(map[string]string)
+		for j, name := range route.compiledRegex.SubexpNames() {
+			if j > 0 && name != "" {
+				named[name] = matches[j]
+			}
+		}
+
+		return &RouteMatch{
+			Route:  route,
+			Groups: matches,
+			Named:  named,
+		}
+	}
+
+	return nil
+}
+
+// HostTemplateData is the data available to Go templates in the host field
+type HostTemplateData struct {
+	Username string
+	Groups   []string
+	Named    map[string]string
+}
+
+// ResolveHost resolves the target host, executing it as a Go template if it contains template syntax.
+// The template has access to the username, positional groups, and named groups from the regex match.
+func ResolveHost(host string, match *RouteMatch, username string) (string, error) {
+	// Fast path: skip template parsing if no template syntax detected
+	if !containsTemplateSyntax(host) {
+		return host, nil
+	}
+
+	tmpl, err := template.New("host").Parse(host)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse host template %q: %w", host, err)
+	}
+
+	data := HostTemplateData{
+		Username: username,
+		Groups:   match.Groups,
+		Named:    match.Named,
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute host template %q: %w", host, err)
+	}
+
+	resolved := buf.String()
+	if resolved == "" {
+		return "", fmt.Errorf("host template %q resolved to empty string", host)
+	}
+
+	return resolved, nil
+}
+
+// containsTemplateSyntax checks if a string contains Go template syntax
+func containsTemplateSyntax(s string) bool {
+	for i := 0; i < len(s)-1; i++ {
+		if s[i] == '{' && s[i+1] == '{' {
+			return true
+		}
+	}
+	return false
 }
 
 // Close stops watching for config changes
@@ -174,7 +287,27 @@ func LoadWithData(path string) (*Config, []byte, error) {
 		return nil, nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	// Compile regex patterns for routes that use usernameRegex
+	if err := config.CompileRegexPatterns(); err != nil {
+		return nil, nil, err
+	}
+
 	return &config, data, nil
+}
+
+// CompileRegexPatterns compiles all usernameRegex patterns in the config
+func (c *Config) CompileRegexPatterns() error {
+	for i := range c.Routes {
+		route := &c.Routes[i]
+		if route.UsernameRegex != "" {
+			re, err := regexp.Compile(route.UsernameRegex)
+			if err != nil {
+				return fmt.Errorf("failed to compile usernameRegex %q for route %d: %w", route.UsernameRegex, i, err)
+			}
+			route.compiledRegex = re
+		}
+	}
+	return nil
 }
 
 // Load reads and parses a configuration file

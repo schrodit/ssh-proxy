@@ -5,6 +5,8 @@ A Go-based SSH proxy server that routes connections to different SSH targets bas
 ## Features
 
 - **Username-based routing**: Route SSH connections to different target servers based on the connecting username
+- **Regex-based routing**: Match usernames with regex patterns and use captured groups in target host templates
+- **Dynamic host templates**: Use Go templates in the target host field with regex capture groups
 - **Multiple authentication methods**: Support for both password and public key authentication
 - **Automatic host key generation**: Generates host keys automatically if not provided
 
@@ -25,8 +27,6 @@ A Go-based SSH proxy server that routes connections to different SSH targets bas
 - **Custom authentication**: Implement custom authentication logic per user
   - helpful if jwt or other custom auth should be used.
 - **Dynamic host information resolver**: Dynmically/custom resolve host information like hostname, user, authentication.
-- **Regex-based routing**: Support regex based routing
-  - To be really useful this feature also needs some custom resolver where the host is dynamically fetched
 - **K8s operator**: Make it possible to dynamically expose ssh servers on pods using annotations.
 
 ## Configuration
@@ -84,19 +84,52 @@ routes:
       - type: "key"
         authorized_keys:
           - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"
+
+  # Dynamic routing with regex: Match usernames like "dev-myapp", "prod-api"
+  - usernameRegex: "^(?P<env>dev|staging|prod)-(?P<service>.+)$"
+    target:
+      host: "{{.Named.env}}-{{.Named.service}}.internal"
+      port: 22
+      user: "deploy"
+      auth:
+        type: "password"
+        password: "deploy-secret"
+    auth:
+      - type: "password"
+        password: "shared-secret"
 ```
 
 ### Configuration Fields
 
 #### Route Configuration
-- `username`: The username that will be authenticated and routed
-- `target.host`: Target SSH server hostname/IP
+- `username`: The username that will be authenticated and routed (exact match)
+- `usernameRegex`: A regex pattern to match usernames (supports named and positional capture groups)
+- `target.host`: Target SSH server hostname/IP (supports Go templates when using `usernameRegex`)
 - `target.port`: Target SSH server port (default: 22)
 - `target.user`: Username to use when connecting to the target server
 - `target.auth.type`: Authentication type for connecting to target ("password" or "key")
 - `target.auth.password`: Password for target server authentication
 - `target.auth.key_path`: Path to private key for target server authentication
 - `auth`: Array of authentication methods for client connections
+
+**Note**: Use either `username` (exact match) or `usernameRegex` (regex match) per route, not both. Exact matches are evaluated before regex matches.
+
+#### Host Templates
+
+When using `usernameRegex`, the `target.host` field supports Go templates with the following data:
+
+- `{{.Username}}`: The original username that connected
+- `{{.Named.<name>}}`: Named capture groups from the regex (e.g., `(?P<env>...)` → `{{.Named.env}}`)
+- `{{index .Groups N}}`: Positional capture groups (index 0 = full match, 1 = first group, etc.)
+
+Example:
+```yaml
+# Username "prod-api" with regex "^(?P<env>dev|prod)-(?P<service>.+)$"
+# resolves host to "prod-api.internal"
+usernameRegex: "^(?P<env>dev|prod)-(?P<service>.+)$"
+target:
+  host: "{{.Named.env}}-{{.Named.service}}.internal"
+```
 
 #### Client Authentication Methods
 - `auth[].type`: Authentication type - "password" or "key"
@@ -262,8 +295,9 @@ ssh bob@localhost -p 2222
 
 1. **Client Connection**: Client connects to the SSH proxy server
 2. **Authentication**: Proxy authenticates the user based on the configured authentication method
-3. **Route Lookup**: Proxy looks up the target server based on the authenticated username
-4. **Target Connection**: Proxy establishes a connection to the target SSH server
+3. **Route Lookup**: Proxy looks up the target server based on the authenticated username (exact match first, then regex patterns)
+4. **Host Resolution**: If the route uses a regex pattern, the target host is resolved using Go templates with captured groups
+5. **Target Connection**: Proxy establishes a connection to the target SSH server
 5. **Protocol Proxying**: All SSH protocol messages (channels, requests, data) are transparently proxied between client and target
 
 ## Security Considerations
