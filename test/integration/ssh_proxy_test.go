@@ -511,6 +511,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
     host: localhost
     port: 22
     user: testuser
+    insecure: true
     auth:
       type: password
       password: testuser-secret
@@ -555,6 +556,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
     host: localhost
     port: 22
     user: testuser
+    insecure: true
     auth:
       type: password
       password: testuser-secret
@@ -566,6 +568,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
     host: localhost
     port: 22
     user: newuser
+    insecure: true
     auth:
       type: password
       password: newuser-secret
