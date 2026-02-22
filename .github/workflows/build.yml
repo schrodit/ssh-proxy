@@ -51,5 +51,5 @@ jobs:
     - name: Archive and push Helm Chart to GitHub Container Registry
       shell: bash
       run: |
-        helm package ./dist/chart --version=0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} --app-version=${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} -d ./dist/helm/controller
-        helm push ./dist/helm/controller/cs-operator-0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }}.tgz  oci://ghcr.io/${{ github.repository }}/chart
+        helm package ./chart --version=0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} --app-version=${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} -d ./dist/chart
+        helm push ./dist/chart/cs-operator-0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }}.tgz  oci://ghcr.io/${{ github.repository }}/chart
