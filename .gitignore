@@ -2,6 +2,7 @@ ssh-proxy
 
 dev
 tmp
+dist
 
 # IDE files
 .vscode

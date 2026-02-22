@@ -52,4 +52,4 @@ jobs:
       shell: bash
       run: |
         helm package ./chart --version=0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} --app-version=${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} -d ./dist/chart
-        helm push ./dist/chart/cs-operator-0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }}.tgz  oci://ghcr.io/${{ github.repository }}/chart
+        helm push ./dist/chart/ssh-proxy-0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }}.tgz  oci://ghcr.io/${{ github.repository }}/chart
