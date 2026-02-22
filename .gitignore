@@ -4,6 +4,8 @@ dev
 tmp
 dist
 
+vendor
+
 # IDE files
 .vscode
 .idea
