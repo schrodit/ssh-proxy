@@ -440,7 +440,6 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 				defer func() {
 					if sshCmd.Process != nil {
 						Expect(sshCmd.Process.Kill()).NotTo(HaveOccurred())
-						Expect(sshCmd.Wait()).NotTo(HaveOccurred())
 					}
 				}()
 
