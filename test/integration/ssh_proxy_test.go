@@ -401,7 +401,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 				By("Cleaning up the HTTP server")
 				cleanupSession, err := client.NewSession()
 				if err == nil {
-					Expect(cleanupSession.Run("pkill -f 'python3 -m http.server'")).NotTo(HaveOccurred())
+					_ = cleanupSession.Run("pkill -f '[p]ython3 -m http.server'")
 					if err := cleanupSession.Close(); err != nil {
 						GinkgoWriter.Printf("Warning: Failed to close cleanup session: %v\n", err)
 					}
@@ -440,7 +440,6 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 				defer func() {
 					if sshCmd.Process != nil {
 						Expect(sshCmd.Process.Kill()).NotTo(HaveOccurred())
-						Expect(sshCmd.Wait()).NotTo(HaveOccurred())
 					}
 				}()
 
@@ -495,7 +494,7 @@ var _ = Describe("SSH Proxy Integration Tests", func() {
 				cleanupCmd := exec.CommandContext(ctx, "sshpass", "-p", "alice-secret", "ssh",
 					"-F", sshConfigPath,
 					"alice-proxy",
-					"pkill -f 'python3 -m http.server' || true")
+					"pkill -f '[p]ython3 -m http.server' || true")
 				cleanupCmd.Env = append(os.Environ(), "SSH_AUTH_SOCK=")
 				Expect(cleanupCmd.Run()).NotTo(HaveOccurred())
 			})

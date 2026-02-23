@@ -129,6 +129,178 @@ var _ = Describe("Config Package", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("must set either host_key or insecure: true"))
 			})
+
+			It("should load external_auth config successfully", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: external_auth
+    external_auth:
+      url: "https://auth.example.com/verify"
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Routes[0].Auth[0].Type).To(Equal("external_auth"))
+				Expect(config.Routes[0].Auth[0].ExternalAuth.URL).To(Equal("https://auth.example.com/verify"))
+			})
+		})
+
+		Context("with external_auth method", func() {
+			It("should load external_auth config with all fields", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: external_auth
+    external_auth:
+      url: "https://auth.example.com/verify"
+      headers:
+        Authorization: "Bearer my-token"
+        X-Custom: "value"
+      timeout: "5s"
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Routes[0].Auth).To(HaveLen(1))
+				webhook := config.Routes[0].Auth[0].ExternalAuth
+				Expect(webhook).NotTo(BeNil())
+				Expect(webhook.URL).To(Equal("https://auth.example.com/verify"))
+				Expect(webhook.Headers).To(HaveKeyWithValue("Authorization", "Bearer my-token"))
+				Expect(webhook.Headers).To(HaveKeyWithValue("X-Custom", "value"))
+				Expect(webhook.Timeout).To(Equal("5s"))
+			})
+
+			It("should fail validation when external_auth url is missing", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: external_auth
+    external_auth:
+      timeout: "5s"
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("external_auth.url"))
+				Expect(err.Error()).To(ContainSubstring("Required value"))
+			})
+
+			It("should fail validation when external_auth config is nil", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: external_auth
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("external_auth: Required value"))
+			})
+
+			It("should fail validation when external_auth timeout is invalid", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: external_auth
+    external_auth:
+      url: "https://auth.example.com/verify"
+      timeout: "not-a-duration"
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("external_auth.timeout"))
+				Expect(err.Error()).To(ContainSubstring("invalid duration"))
+			})
+
+			It("should allow external_auth alongside other auth methods", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-secret
+  - type: external_auth
+    external_auth:
+      url: "https://auth.example.com/verify"
+  - type: key
+    authorized_keys:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Routes[0].Auth).To(HaveLen(3))
+				Expect(config.Routes[0].Auth[0].Type).To(Equal("password"))
+				Expect(config.Routes[0].Auth[1].Type).To(Equal("external_auth"))
+				Expect(config.Routes[0].Auth[2].Type).To(Equal("key"))
+			})
 		})
 
 		Context("with multiple routes and different auth types", func() {
@@ -159,7 +331,7 @@ var _ = Describe("Config Package", func() {
   - type: key
     authorized_keys:
     - ssh-rsa AAAA...
-  - type: password_hash
+  - type: password
     password_hash: $2a$10$...
     hash_type: bcrypt
 `
@@ -184,7 +356,7 @@ var _ = Describe("Config Package", func() {
 				Expect(config.Routes[1].Target.Port).To(Equal(2222))
 				Expect(config.Routes[1].Auth).To(HaveLen(2))
 				Expect(config.Routes[1].Auth[0].Type).To(Equal("key"))
-				Expect(config.Routes[1].Auth[1].Type).To(Equal("password_hash"))
+				Expect(config.Routes[1].Auth[1].Type).To(Equal("password"))
 			})
 		})
 
@@ -744,14 +916,14 @@ var _ = Describe("Config Package", func() {
 					Auth: []AuthMethod{
 						{Type: "password", Password: "secret"},
 						{Type: "key", AuthorizedKeys: []string{"ssh-rsa AAA..."}},
-						{Type: "password_hash", PasswordHash: "$2a$10$...", HashType: "bcrypt"},
+						{Type: "password", PasswordHash: "$2a$10$...", HashType: "bcrypt"},
 					},
 				}
 
 				Expect(route.Auth).To(HaveLen(3))
 				Expect(route.Auth[0].Type).To(Equal("password"))
 				Expect(route.Auth[1].Type).To(Equal("key"))
-				Expect(route.Auth[2].Type).To(Equal("password_hash"))
+				Expect(route.Auth[2].Type).To(Equal("password"))
 			})
 
 			It("should support usernameRegex field", func() {
@@ -870,7 +1042,8 @@ var _ = Describe("Config Package", func() {
 
 				_, err = Load(tmpFile.Name())
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("failed to compile usernameRegex"))
+				Expect(err.Error()).To(ContainSubstring("usernameRegex"))
+				Expect(err.Error()).To(ContainSubstring("invalid regex"))
 			})
 		})
 

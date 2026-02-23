@@ -64,3 +64,22 @@ routes:
   auth:
   - type: "password"
     password: "shared-secret"
+# External authentication: Delegate auth to an external webhook service.
+# The webhook receives a JSON POST with the user's credentials and returns
+# whether the user is allowed to connect.
+- username: "webhook-user"
+  target:
+    host: "fallback.example.com"
+    port: 22
+    user: "deploy"
+    insecure: true
+    auth:
+      type: "password"
+      password: "fallback-password"
+  auth:
+  - type: "external_auth"
+    external_auth:
+      url: "https://auth.example.com/ssh/verify"
+      headers:
+        Authorization: "Bearer my-api-token"
+      timeout: "5s"

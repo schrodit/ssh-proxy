@@ -188,6 +188,29 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 
 	// Check all auth methods for password authentication
 	for _, authMethod := range route.Auth {
+		// Handle external auth (webhook)
+		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
+			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &WebhookAuthRequest{
+				Username: username,
+				AuthType: "password",
+				Password: string(password),
+			})
+			if err != nil {
+				slog.Error("External auth request failed", "error", err, "username", username)
+				continue
+			}
+			if allowed {
+				slog.Info("External auth password authentication successful", "username", username)
+				return &ssh.Permissions{
+					Extensions: map[string]string{
+						"username": username,
+					},
+				}, nil
+			}
+			slog.Debug("External auth denied password authentication", "username", username)
+			continue
+		}
+
 		if authMethod.Type != "password" {
 			continue
 		}
@@ -229,6 +252,29 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 
 	// Check all auth methods for public key authentication
 	for _, authMethod := range route.Auth {
+		// Handle external auth (webhook)
+		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
+			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &WebhookAuthRequest{
+				Username:  username,
+				AuthType:  "public_key",
+				PublicKey: string(ssh.MarshalAuthorizedKey(key)),
+			})
+			if err != nil {
+				slog.Error("External auth request failed", "error", err, "username", username)
+				continue
+			}
+			if allowed {
+				slog.Info("External auth public key authentication successful", "username", username)
+				return &ssh.Permissions{
+					Extensions: map[string]string{
+						"username": username,
+					},
+				}, nil
+			}
+			slog.Debug("External auth denied public key authentication", "username", username)
+			continue
+		}
+
 		if authMethod.Type != "key" {
 			continue
 		}

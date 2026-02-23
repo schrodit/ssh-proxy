@@ -8,10 +8,12 @@ import (
 	"regexp"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/minio/sha256-simd"
 	"gopkg.in/yaml.v2"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 // Config represents the main configuration structure
@@ -39,11 +41,12 @@ type RouteMatch struct {
 
 // AuthMethod represents an authentication method for client connections
 type AuthMethod struct {
-	Type           string   `yaml:"type"`                      // "password", "key", or "password_hash"
-	Password       string   `yaml:"password,omitempty"`        // for password auth (plain text)
-	PasswordHash   string   `yaml:"password_hash,omitempty"`   // for hashed password auth
-	HashType       string   `yaml:"hash_type,omitempty"`       // hash algorithm used (bcrypt, sha256, etc.)
-	AuthorizedKeys []string `yaml:"authorized_keys,omitempty"` // for key auth (inline public keys)
+	Type           string         `yaml:"type"`                      // "password", "key", "password_hash", or "external_auth"
+	Password       string         `yaml:"password,omitempty"`        // for password auth (plain text)
+	PasswordHash   string         `yaml:"password_hash,omitempty"`   // for hashed password auth
+	HashType       string         `yaml:"hash_type,omitempty"`       // hash algorithm used (bcrypt, sha256, etc.)
+	AuthorizedKeys []string       `yaml:"authorized_keys,omitempty"` // for key auth (inline public keys)
+	ExternalAuth   *WebhookConfig `yaml:"external_auth,omitempty"`   // for external auth via webhook
 }
 
 // Target represents the target SSH server configuration
@@ -61,6 +64,15 @@ type TargetAuth struct {
 	Type     string `yaml:"type"`     // "password", "key", or "password_hash"
 	Password string `yaml:"password"` // for password auth (plain text)
 	KeyPath  string `yaml:"key_path"` // for key auth (file path)
+}
+
+// WebhookConfig represents the configuration for an external authentication webhook.
+// The webhook receives a JSON POST with user credentials and returns whether the
+// user is authenticated.
+type WebhookConfig struct {
+	URL     string            `yaml:"url"`               // URL of the webhook endpoint
+	Headers map[string]string `yaml:"headers,omitempty"` // optional HTTP headers (e.g., Authorization)
+	Timeout string            `yaml:"timeout,omitempty"` // Go duration string (e.g., "5s", "30s"); default "5s"
 }
 
 // ConfigManager manages configuration with dynamic reloading and concurrent access
@@ -299,28 +311,120 @@ func LoadWithData(path string) (*Config, []byte, error) {
 
 // Validate validates the configuration and compiles regex patterns.
 func (c *Config) Validate() error {
+	allErrs := field.ErrorList{}
+	routesPath := field.NewPath("routes")
+
 	for i := range c.Routes {
 		route := &c.Routes[i]
+		routePath := routesPath.Index(i)
 
 		// Compile usernameRegex if set
 		if route.UsernameRegex != "" {
 			re, err := regexp.Compile(route.UsernameRegex)
 			if err != nil {
-				return fmt.Errorf("failed to compile usernameRegex %q for route %d: %w", route.UsernameRegex, i, err)
+				allErrs = append(allErrs, field.Invalid(routePath.Child("usernameRegex"), route.UsernameRegex, fmt.Sprintf("invalid regex: %v", err)))
+			} else {
+				route.compiledRegex = re
 			}
-			route.compiledRegex = re
+		}
+
+		// Validate auth methods
+		for j, auth := range route.Auth {
+			authPath := routePath.Child("auth").Index(j)
+			allErrs = append(allErrs, validateAuthMethod(auth, authPath)...)
 		}
 
 		// Validate that either host_key or insecure is explicitly set
+		targetPath := routePath.Child("target")
 		if route.Target.HostKey == "" && !route.Target.Insecure {
-			name := route.Username
-			if name == "" {
-				name = route.UsernameRegex
-			}
-			return fmt.Errorf("route %d (%s): target must set either host_key or insecure: true", i, name)
+			allErrs = append(allErrs, field.Required(targetPath.Child("host_key"), "target must set either host_key or insecure: true"))
 		}
 	}
-	return nil
+
+	return allErrs.ToAggregate()
+}
+
+// validAuthTypes are the supported authentication method types.
+var validAuthTypes = []string{"password", "key", "external_auth"}
+
+// validateAuthMethod validates a single auth method entry using field path errors.
+func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	switch auth.Type {
+	case "password":
+		// Must have either password or password_hash
+		if auth.Password == "" && auth.PasswordHash == "" {
+			allErrs = append(allErrs, field.Required(fldPath.Child("password"), "password or password_hash is required for type \"password\""))
+		}
+		// If password_hash is set, hash_type must also be set
+		if auth.PasswordHash != "" && auth.HashType == "" {
+			allErrs = append(allErrs, field.Required(fldPath.Child("hash_type"), "hash_type is required when password_hash is set"))
+		}
+		// Forbidden fields
+		if len(auth.AuthorizedKeys) > 0 {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorized_keys"), "not allowed for type \"password\""))
+		}
+		if auth.ExternalAuth != nil {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("external_auth"), "not allowed for type \"password\""))
+		}
+
+	case "key":
+		// Must have authorized_keys
+		if len(auth.AuthorizedKeys) == 0 {
+			allErrs = append(allErrs, field.Required(fldPath.Child("authorized_keys"), "required for type \"key\""))
+		}
+		// Forbidden fields
+		if auth.Password != "" {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password"), "not allowed for type \"key\""))
+		}
+		if auth.PasswordHash != "" {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password_hash"), "not allowed for type \"key\""))
+		}
+		if auth.HashType != "" {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hash_type"), "not allowed for type \"key\""))
+		}
+		if auth.ExternalAuth != nil {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("external_auth"), "not allowed for type \"key\""))
+		}
+
+	case "external_auth":
+		// Must have external_auth config with url
+		if auth.ExternalAuth == nil {
+			allErrs = append(allErrs, field.Required(fldPath.Child("external_auth"), "required for type \"external_auth\""))
+		} else {
+			extPath := fldPath.Child("external_auth")
+			if auth.ExternalAuth.URL == "" {
+				allErrs = append(allErrs, field.Required(extPath.Child("url"), "webhook url is required"))
+			}
+			if auth.ExternalAuth.Timeout != "" {
+				if _, err := time.ParseDuration(auth.ExternalAuth.Timeout); err != nil {
+					allErrs = append(allErrs, field.Invalid(extPath.Child("timeout"), auth.ExternalAuth.Timeout, fmt.Sprintf("invalid duration: %v", err)))
+				}
+			}
+		}
+		// Forbidden fields
+		if auth.Password != "" {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password"), "not allowed for type \"external_auth\""))
+		}
+		if auth.PasswordHash != "" {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password_hash"), "not allowed for type \"external_auth\""))
+		}
+		if auth.HashType != "" {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hash_type"), "not allowed for type \"external_auth\""))
+		}
+		if len(auth.AuthorizedKeys) > 0 {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorized_keys"), "not allowed for type \"external_auth\""))
+		}
+
+	case "":
+		allErrs = append(allErrs, field.Required(fldPath.Child("type"), "auth type is required"))
+
+	default:
+		allErrs = append(allErrs, field.NotSupported(fldPath.Child("type"), auth.Type, validAuthTypes))
+	}
+
+	return allErrs
 }
 
 // Load reads and parses a configuration file

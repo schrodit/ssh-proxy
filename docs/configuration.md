@@ -72,6 +72,24 @@ routes:
     auth:
       - type: "password"
         password: "shared-secret"
+
+  # External authentication: Delegate auth to an external webhook service
+  - username: "webhook-user"
+    target:
+      host: "fallback.example.com"
+      port: 22
+      user: "deploy"
+      insecure: true
+      auth:
+        type: "password"
+        password: "fallback-password"
+    auth:
+      - type: "external_auth"
+        external_auth:
+          url: "https://auth.example.com/ssh/verify"
+          headers:
+            Authorization: "Bearer my-api-token"
+          timeout: "5s"
 ```
 
 ### Configuration Fields
@@ -111,13 +129,105 @@ target:
 ```
 
 #### Client Authentication Methods
-- `auth[].type`: Authentication type - "password" or "key"
+- `auth[].type`: Authentication type - "password", "key", or "external_auth"
 - `auth[].password`: Plain text password (not recommended for production)
 - `auth[].password_hash`: Hashed password for secure storage
 - `auth[].hash_type`: Hash algorithm used ("bcrypt" recommended)
 - `auth[].authorized_keys`: Array of public keys for key-based authentication
+- `auth[].external_auth`: External webhook authentication configuration (see below)
 
 **Note**: Multiple authentication methods can be configured per user. Clients can authenticate using any of the configured methods.
+
+### External Authentication (Webhook)
+
+The `external_auth` type delegates authentication to an external HTTP service. When a client connects, the proxy sends a JSON POST request with the user's credentials to the configured webhook URL. The webhook decides whether to allow or deny the connection based on the HTTP status code it returns.
+
+#### Configuration
+
+```yaml
+auth:
+  - type: "external_auth"
+    external_auth:
+      url: "https://auth.example.com/ssh/verify"
+      headers:
+        Authorization: "Bearer my-api-token"
+        X-Custom-Header: "value"
+      timeout: "10s"
+```
+
+#### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `external_auth.url` | Yes | The URL of the webhook endpoint that will receive the authentication request. |
+| `external_auth.headers` | No | A map of HTTP headers to include in the request (e.g., API keys, bearer tokens). |
+| `external_auth.timeout` | No | Timeout for the HTTP request as a Go duration string (e.g., `"5s"`, `"30s"`). Defaults to `"5s"`. |
+
+#### Webhook Request
+
+The proxy sends a `POST` request with `Content-Type: application/json` to the configured URL. The JSON body has the following structure:
+
+```json
+{
+  "username": "alice",
+  "auth_type": "password",
+  "password": "secret"
+}
+```
+
+For public key authentication:
+
+```json
+{
+  "username": "alice",
+  "auth_type": "public_key",
+  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `username` | The SSH username the client is connecting with. |
+| `auth_type` | Either `"password"` or `"public_key"`. |
+| `password` | The password provided by the client (only for `password` auth). |
+| `public_key` | The public key presented by the client in OpenSSH authorized_keys format (only for `public_key` auth). |
+
+#### Webhook Response
+
+The webhook communicates its decision via HTTP status code:
+
+| Status Code | Meaning |
+|-------------|---------|
+| `200 OK` | User is authenticated — the connection is allowed. |
+| `401 Unauthorized` | User is not authenticated — the connection is rejected. |
+| Any other code | Treated as an error — the connection is rejected and the error is logged. |
+
+The response body is ignored.
+
+#### Example Webhook Server (Go)
+
+```go
+http.HandleFunc("/ssh/verify", func(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        Username string `json:"username"`
+        AuthType string `json:"auth_type"`
+        Password string `json:"password,omitempty"`
+        PublicKey string `json:"public_key,omitempty"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+
+    // Your authentication logic here
+    if req.Username == "alice" && req.Password == "secret" {
+        w.WriteHeader(http.StatusOK)
+        return
+    }
+
+    w.WriteHeader(http.StatusUnauthorized)
+})
+```
 
 ### Password Hashing
 
