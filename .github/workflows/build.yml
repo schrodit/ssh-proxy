@@ -10,13 +10,21 @@ permissions:
   contents: read
 
 jobs:
-  docker:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+        - platform: linux/amd64
+          runner: ubuntu-latest
+        - platform: linux/arm64
+          runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
     - name: Checkout repository
       uses: actions/checkout@v6
 
-    - name: Login to Docker Hub
+    - name: Login to GHCR
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
@@ -31,25 +39,150 @@ jobs:
         tags: |
           type=sha
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
-
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Build and push Docker image
+    - name: Build and push by digest
+      id: build
       uses: docker/build-push-action@v6
       with:
         context: .
-        platforms: linux/amd64,linux/arm64
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        platforms: ${{ matrix.platform }}
+        outputs: type=image,"name=ghcr.io/${{ github.repository }}",push-by-digest=true,name-canonical=true,push=true
+        cache-from: type=gha,scope=${{ matrix.platform }}
+        cache-to: type=gha,scope=${{ matrix.platform }},mode=max
+
+    - name: Export digest
+      run: |
+        mkdir -p ${{ runner.temp }}/digests
+        digest="${{ steps.build.outputs.digest }}"
+        touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+    - name: Upload digest
+      uses: actions/upload-artifact@v4
+      with:
+        name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+        path: ${{ runner.temp }}/digests/*
+        if-no-files-found: error
+        retention-days: 1
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+
+    - name: Login to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository }}
+        tags: |
+          type=sha
+
+    - name: Download digests
+      uses: actions/download-artifact@v4
+      with:
+        path: ${{ runner.temp }}/digests
+        pattern: digests-*
+        merge-multiple: true
+
+    - name: Create multi-platform manifest and push
+      working-directory: ${{ runner.temp }}/digests
+      run: |
+        docker buildx imagetools create \
+          $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}') \
+          $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+
+    - name: Inspect image
+      run: docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
 
     - name: Archive and push Helm Chart to GitHub Container Registry
       shell: bash
       run: |
         helm package ./chart --version=0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} --app-version=${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} -d ./dist/chart
         helm push ./dist/chart/ssh-proxy-0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }}.tgz  oci://ghcr.io/${{ github.repository }}/chart
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      chart_version: 0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }}
+
+  helm-deploy-test:
+    runs-on: ubuntu-latest
+    needs: merge
+    steps:
+    - name: Login to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: chart-test
+
+    - name: Create GHCR pull secret
+      run: |
+        kubectl create secret docker-registry ghcr-pull \
+          --docker-server=ghcr.io \
+          --docker-username=${{ github.actor }} \
+          --docker-password=${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install Helm chart from OCI registry
+      run: |
+        helm install ssh-proxy \
+          oci://ghcr.io/${{ github.repository }}/chart/ssh-proxy \
+          --version ${{ needs.merge.outputs.chart_version }} \
+          --set image.tag=${{ needs.merge.outputs.image_tag }} \
+          --set imagePullSecrets[0].name=ghcr-pull \
+          --set proxy.config.routes[0].username=test \
+          --set proxy.config.routes[0].target.host=localhost \
+          --set proxy.config.routes[0].target.port=22 \
+          --set proxy.config.routes[0].target.auth.type=password \
+          --set proxy.config.routes[0].target.auth.password=test \
+          --set proxy.config.routes[0].auth[0].type=password \
+          --set proxy.config.routes[0].auth[0].password=test \
+          --wait \
+          --timeout 120s
+
+    - name: Verify deployment is ready
+      run: kubectl rollout status deployment/ssh-proxy --timeout=60s
+
+    - name: Check pod health
+      run: |
+        kubectl get pods -l app.kubernetes.io/name=ssh-proxy -o wide
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ssh-proxy --timeout=60s
+
+    - name: Verify services exist
+      run: |
+        kubectl get svc ssh-proxy-http
+        kubectl get svc ssh-proxy-ssh
+
+    - name: Test health endpoint
+      run: |
+        kubectl port-forward svc/ssh-proxy-http 8080:8080 &
+        sleep 3
+        curl -sf http://localhost:8080/health
+        curl -sf http://localhost:8080/ready
+
+    - name: Print debug info on failure
+      if: failure()
+      run: |
+        echo "=== Pods ==="
+        kubectl get pods -A
+        echo "=== Deployment ==="
+        kubectl describe deployment ssh-proxy
+        echo "=== Pod logs ==="
+        kubectl logs -l app.kubernetes.io/name=ssh-proxy --tail=100
+        echo "=== Events ==="
+        kubectl get events --sort-by='.lastTimestamp'

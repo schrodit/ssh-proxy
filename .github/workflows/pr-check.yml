@@ -73,3 +73,77 @@ jobs:
       run: |-
         docker compose -f docker-compose.yml up -d --build
         go test -v ./test/integration/...
+
+  helm-deploy-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        load: true
+        tags: ssh-proxy:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: chart-test
+
+    - name: Load image into kind
+      run: kind load docker-image ssh-proxy:test --name chart-test
+
+    - name: Install Helm chart
+      run: |
+        helm install ssh-proxy ./chart \
+          --set image.repository=ssh-proxy \
+          --set image.tag=test \
+          --set image.pullPolicy=Never \
+          --set proxy.config.routes[0].username=test \
+          --set proxy.config.routes[0].target.host=localhost \
+          --set proxy.config.routes[0].target.port=22 \
+          --set proxy.config.routes[0].target.auth.type=password \
+          --set proxy.config.routes[0].target.auth.password=test \
+          --set proxy.config.routes[0].auth[0].type=password \
+          --set proxy.config.routes[0].auth[0].password=test \
+          --wait \
+          --timeout 120s
+
+    - name: Verify deployment is ready
+      run: kubectl rollout status deployment/ssh-proxy --timeout=60s
+
+    - name: Check pod health
+      run: |
+        kubectl get pods -l app.kubernetes.io/name=ssh-proxy -o wide
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=ssh-proxy --timeout=60s
+
+    - name: Verify services exist
+      run: |
+        kubectl get svc ssh-proxy-http
+        kubectl get svc ssh-proxy-ssh
+
+    - name: Test health endpoint
+      run: |
+        kubectl port-forward svc/ssh-proxy-http 8080:8080 &
+        sleep 3
+        curl -sf http://localhost:8080/health
+        curl -sf http://localhost:8080/ready
+
+    - name: Print debug info on failure
+      if: failure()
+      run: |
+        echo "=== Pods ==="
+        kubectl get pods -A
+        echo "=== Deployment ==="
+        kubectl describe deployment ssh-proxy
+        echo "=== Pod logs ==="
+        kubectl logs -l app.kubernetes.io/name=ssh-proxy --tail=100
+        echo "=== Events ==="
+        kubectl get events --sort-by='.lastTimestamp'
