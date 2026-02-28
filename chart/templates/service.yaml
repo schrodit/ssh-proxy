@@ -20,10 +20,30 @@ metadata:
   name: {{ include "ssh-proxy.fullname" . }}-ssh
   labels:
     {{- include "ssh-proxy.labels" . | nindent 4 }}
+    {{- with .Values.ssh.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.ssh.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .Values.ssh.service.type }}
+  {{- with .Values.ssh.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with .Values.ssh.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+  {{- with .Values.ssh.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.ssh.service.loadBalancerClass }}
+  loadBalancerClass: {{ . }}
+  {{- end }}
   ports:
-    - port: {{ .Values.service.port }}
+    - port: {{ .Values.ssh.service.port }}
       targetPort: ssh
       protocol: TCP
       name: ssh
