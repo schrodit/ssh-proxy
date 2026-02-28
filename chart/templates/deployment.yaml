@@ -41,7 +41,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: 
-          - "./ssh-proxy",
+          - "./ssh-proxy"
           - "-config"
           - "/proxy/config.yaml"
           - "-port"
@@ -69,7 +69,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          
           volumeMounts:
             - name: proxy-config
               mountPath: /proxy
@@ -84,6 +83,7 @@ spec:
             secretName: {{ include "ssh-proxy.fullname" . }}
             items:
               - key: config.yaml
+                path: config.yaml
             optional: false
       {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
