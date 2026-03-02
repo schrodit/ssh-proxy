@@ -9,6 +9,8 @@ Example Use Cases
 - **Load Balancing**: Distribute users across multiple backend SSH servers
 - **Audit and Logging**: Centralize SSH access through a single entry point
 
+![Architecture](./docs/proxy_architecture.drawio.png)
+
 ## Features
 
 - **Username-based routing**: Route SSH connections to different target servers based on the connecting username
@@ -16,7 +18,8 @@ Example Use Cases
 - **Dynamic host templates**: Use Go templates in the target host field with regex capture groups
 - **Multiple authentication methods**: Support for both password and public key authentication
 - **Target host key verification**: Require explicit `host_key` or `insecure: true` per target for secure connections
-- **Automatic host key generation**: Generates host keys automatically if not provided
+- **Custom authentication**: Implement custom authentication logic per user
+  - helpful if jwt or other custom auth should be used.
 
 ## Planned Features
 - **Improve security**
@@ -30,8 +33,6 @@ Example Use Cases
 - **HA Deployment**: Deploy multiple replicas
   - Including a centralized routing table
   - Sessions that are moved.
-- **Custom authentication**: Implement custom authentication logic per user
-  - helpful if jwt or other custom auth should be used.
 - **Dynamic host information resolver**: Dynmically/custom resolve host information like hostname, user, authentication.
 - **K8s operator**: Make it possible to dynamically expose ssh servers on pods using annotations.
 
@@ -43,6 +44,8 @@ Example Use Cases
 4. **Host Resolution**: If the route uses a regex pattern, the target host is resolved using Go templates with captured groups
 5. **Target Connection**: Proxy establishes a connection to the target SSH server
 5. **Protocol Proxying**: All SSH protocol messages (channels, requests, data) are transparently proxied between client and target
+
+![Flow Chart](./docs/flowchart.drawio.png)
 
 ## Configuration
 
