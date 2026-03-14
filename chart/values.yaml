@@ -138,6 +138,12 @@ volumeMounts: []
   #   mountPath: "/etc/foo"
   #   readOnly: true
 
+# Additional containers to add to the pod.
+extraContainers: []
+  # - name: sidecar
+  #   image: busybox
+  #   command: ['sh', '-c', 'echo hello']
+
 nodeSelector: {}
 
 tolerations: []
