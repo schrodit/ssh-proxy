@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/schrodit/ssh-proxy/pkg/config"
+	"github.com/schrodit/ssh-proxy/pkg/types"
 )
 
 const (
@@ -15,17 +16,9 @@ const (
 	defaultWebhookTimeout = 5 * time.Second
 )
 
-// WebhookAuthRequest is the JSON body sent to the webhook endpoint.
-type WebhookAuthRequest struct {
-	Username  string `json:"username"`
-	AuthType  string `json:"auth_type"` // "password" or "public_key"
-	Password  string `json:"password,omitempty"`
-	PublicKey string `json:"public_key,omitempty"`
-}
-
 // callWebhookAuth sends a POST request to the configured webhook to authenticate a user.
 // The webhook returns 200 if the user is authorized and 401 if unauthorized.
-func callWebhookAuth(cfg *config.WebhookConfig, req *WebhookAuthRequest) (bool, error) {
+func callWebhookAuth(cfg *config.WebhookConfig, req *types.WebhookAuthRequest) (bool, error) {
 	timeout := defaultWebhookTimeout
 	if cfg.Timeout != "" {
 		d, err := time.ParseDuration(cfg.Timeout)

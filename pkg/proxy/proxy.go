@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/schrodit/ssh-proxy/pkg/config"
+	"github.com/schrodit/ssh-proxy/pkg/types"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/ssh"
@@ -190,7 +191,7 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 	for _, authMethod := range route.Auth {
 		// Handle external auth (webhook)
 		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
-			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &WebhookAuthRequest{
+			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookAuthRequest{
 				Username: username,
 				AuthType: "password",
 				Password: string(password),
@@ -254,7 +255,7 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 	for _, authMethod := range route.Auth {
 		// Handle external auth (webhook)
 		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
-			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &WebhookAuthRequest{
+			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookAuthRequest{
 				Username:  username,
 				AuthType:  "public_key",
 				PublicKey: string(ssh.MarshalAuthorizedKey(key)),
