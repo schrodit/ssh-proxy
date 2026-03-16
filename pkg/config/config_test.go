@@ -56,15 +56,15 @@ var _ = Describe("Config Package", func() {
 			})
 		})
 
-		Context("with target host_key and insecure fields", func() {
-			It("should load host_key from config", func() {
+		Context("with target hostKey and insecure fields", func() {
+			It("should load hostKey from config", func() {
 				content := `routes:
 - username: alice
   target:
     host: example.com
     port: 22
     user: alice
-    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"
+    hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"
     auth:
       type: password
       password: secret
@@ -107,7 +107,7 @@ var _ = Describe("Config Package", func() {
 				Expect(config.Routes[0].Target.HostKey).To(BeEmpty())
 			})
 
-			It("should fail validation when neither host_key nor insecure is set", func() {
+			It("should fail validation when neither hostKey nor insecure is set", func() {
 				content := `routes:
 - username: alice
   target:
@@ -127,7 +127,7 @@ var _ = Describe("Config Package", func() {
 
 				_, err = Load(tmpFile.Name())
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("must set either host_key or insecure: true"))
+				Expect(err.Error()).To(ContainSubstring("must set either hostKey or insecure: true"))
 			})
 
 			It("should load external_auth config successfully", func() {
@@ -143,7 +143,7 @@ var _ = Describe("Config Package", func() {
       password: secret
   auth:
   - type: external_auth
-    external_auth:
+    externalAuth:
       url: "https://auth.example.com/verify"
 `
 				_, err := tmpFile.WriteString(content)
@@ -171,7 +171,7 @@ var _ = Describe("Config Package", func() {
       password: secret
   auth:
   - type: external_auth
-    external_auth:
+    externalAuth:
       url: "https://auth.example.com/verify"
       headers:
         Authorization: "Bearer my-token"
@@ -206,7 +206,7 @@ var _ = Describe("Config Package", func() {
       password: secret
   auth:
   - type: external_auth
-    external_auth:
+    externalAuth:
       timeout: "5s"
 `
 				_, err := tmpFile.WriteString(content)
@@ -215,7 +215,7 @@ var _ = Describe("Config Package", func() {
 
 				_, err = Load(tmpFile.Name())
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("external_auth.url"))
+				Expect(err.Error()).To(ContainSubstring("externalAuth.url"))
 				Expect(err.Error()).To(ContainSubstring("Required value"))
 			})
 
@@ -239,7 +239,7 @@ var _ = Describe("Config Package", func() {
 
 				_, err = Load(tmpFile.Name())
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("external_auth: Required value"))
+				Expect(err.Error()).To(ContainSubstring("externalAuth: Required value"))
 			})
 
 			It("should fail validation when external_auth timeout is invalid", func() {
@@ -255,7 +255,7 @@ var _ = Describe("Config Package", func() {
       password: secret
   auth:
   - type: external_auth
-    external_auth:
+    externalAuth:
       url: "https://auth.example.com/verify"
       timeout: "not-a-duration"
 `
@@ -265,7 +265,7 @@ var _ = Describe("Config Package", func() {
 
 				_, err = Load(tmpFile.Name())
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("external_auth.timeout"))
+				Expect(err.Error()).To(ContainSubstring("externalAuth.timeout"))
 				Expect(err.Error()).To(ContainSubstring("invalid duration"))
 			})
 
@@ -284,10 +284,10 @@ var _ = Describe("Config Package", func() {
   - type: password
     password: alice-secret
   - type: external_auth
-    external_auth:
+    externalAuth:
       url: "https://auth.example.com/verify"
   - type: key
-    authorized_keys:
+    authorizedKeys:
     - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"
 `
 				_, err := tmpFile.WriteString(content)
@@ -326,14 +326,14 @@ var _ = Describe("Config Package", func() {
     insecure: true
     auth:
       type: key
-      key_path: /path/to/key
+      keyPath: /path/to/key
   auth:
   - type: key
-    authorized_keys:
+    authorizedKeys:
     - ssh-rsa AAAA...
   - type: password
-    password_hash: $2a$10$...
-    hash_type: bcrypt
+    passwordHash: $2a$10$...
+    hashType: bcrypt
 `
 				_, err := tmpFile.WriteString(content)
 				Expect(err).NotTo(HaveOccurred())
@@ -956,7 +956,7 @@ var _ = Describe("Config Package", func() {
 		})
 
 		Context("Target struct", func() {
-			It("should support host_key field", func() {
+			It("should support hostKey field", func() {
 				target := Target{
 					Host:    "example.com",
 					Port:    22,

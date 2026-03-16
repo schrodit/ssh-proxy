@@ -12,15 +12,15 @@ routes:
       port: 22
       user: "alice"
       # Known host key for secure verification
-      host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0..."
+      hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0..."
       auth:
         type: "password"
         password: "alice-target-password"
     auth:
       - type: "password"
         # bcrypt hash of "alice-secret"
-        password_hash: "$2a$10$8K1p/a0dqbgX8K1p/a0dqOGp3lZ4wRcUWUzU8K1p/a0dq"
-        hash_type: "bcrypt"
+        passwordHash: "$2a$10$8K1p/a0dqbgX8K1p/a0dqOGp3lZ4wRcUWUzU8K1p/a0dq"
+        hashType: "bcrypt"
   
   # Bob: Public key authentication only (insecure target)
   - username: "bob"
@@ -32,10 +32,10 @@ routes:
       insecure: true
       auth:
         type: "key"
-        key_path: "/path/to/bob/target/key"
+        keyPath: "/path/to/bob/target/key"
     auth:
       - type: "key"
-        authorized_keys:
+        authorizedKeys:
           - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7vbqajDw+3X0... bob@example.com"
           - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0... bob@laptop"
   
@@ -53,10 +53,10 @@ routes:
       - type: "password"
         password: "charlie-password1"
       - type: "password"
-        password_hash: "$2a$10$abcdefghijklmnop..."
-        hash_type: "bcrypt"
+        passwordHash: "$2a$10$abcdefghijklmnop..."
+        hashType: "bcrypt"
       - type: "key"
-        authorized_keys:
+        authorizedKeys:
           - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"
 
   # Dynamic routing with regex: Match usernames like "dev-myapp", "prod-api"
@@ -85,7 +85,7 @@ routes:
         password: "fallback-password"
     auth:
       - type: "external_auth"
-        external_auth:
+        externalAuth:
           url: "https://auth.example.com/ssh/verify"
           headers:
             Authorization: "Bearer my-api-token"
@@ -100,16 +100,16 @@ routes:
 - `target.host`: Target SSH server hostname/IP (supports Go templates when using `usernameRegex`)
 - `target.port`: Target SSH server port (default: 22)
 - `target.user`: Username to use when connecting to the target server
-- `target.host_key`: Known public key of the target server for host key verification (e.g., `"ssh-ed25519 AAAA..."`). Required if `insecure` is not set.
-- `target.insecure`: Set to `true` to skip host key verification. Required if `host_key` is not set. **Not recommended for production.**
+- `target.hostKey`: Known public key of the target server for host key verification (e.g., `"ssh-ed25519 AAAA..."`). Required if `insecure` is not set.
+- `target.insecure`: Set to `true` to skip host key verification. Required if `hostKey` is not set. **Not recommended for production.**
 - `target.auth.type`: Authentication type for connecting to target ("password" or "key")
 - `target.auth.password`: Password for target server authentication
-- `target.auth.key_path`: Path to private key for target server authentication
+- `target.auth.keyPath`: Path to private key for target server authentication
 - `auth`: Array of authentication methods for client connections
 
 **Note**: Use either `username` (exact match) or `usernameRegex` (regex match) per route, not both. Exact matches are evaluated before regex matches.
 
-**Note**: Every target must explicitly set either `host_key` or `insecure: true`. The configuration will fail to load if neither is specified.
+**Note**: Every target must explicitly set either `hostKey` or `insecure: true`. The configuration will fail to load if neither is specified.
 
 #### Host Templates
 
@@ -131,10 +131,10 @@ target:
 #### Client Authentication Methods
 - `auth[].type`: Authentication type - "password", "key", or "external_auth"
 - `auth[].password`: Plain text password (not recommended for production)
-- `auth[].password_hash`: Hashed password for secure storage
-- `auth[].hash_type`: Hash algorithm used ("bcrypt" recommended)
-- `auth[].authorized_keys`: Array of public keys for key-based authentication
-- `auth[].external_auth`: External webhook authentication configuration (see below)
+- `auth[].passwordHash`: Hashed password for secure storage
+- `auth[].hashType`: Hash algorithm used ("bcrypt" recommended)
+- `auth[].authorizedKeys`: Array of public keys for key-based authentication
+- `auth[].externalAuth`: External webhook authentication configuration (see below)
 
 **Note**: Multiple authentication methods can be configured per user. Clients can authenticate using any of the configured methods.
 
@@ -147,7 +147,7 @@ The `external_auth` type delegates authentication to an external HTTP service. W
 ```yaml
 auth:
   - type: "external_auth"
-    external_auth:
+    externalAuth:
       url: "https://auth.example.com/ssh/verify"
       headers:
         Authorization: "Bearer my-api-token"
@@ -158,10 +158,10 @@ auth:
 #### Fields
 
 | Field | Required | Description |
-|-------|----------|-------------|
-| `external_auth.url` | Yes | The URL of the webhook endpoint that will receive the authentication request. |
-| `external_auth.headers` | No | A map of HTTP headers to include in the request (e.g., API keys, bearer tokens). |
-| `external_auth.timeout` | No | Timeout for the HTTP request as a Go duration string (e.g., `"5s"`, `"30s"`). Defaults to `"5s"`. |
+|-------|----------|-----------|
+| `externalAuth.url` | Yes | The URL of the webhook endpoint that will receive the authentication request. |
+| `externalAuth.headers` | No | A map of HTTP headers to include in the request (e.g., API keys, bearer tokens). |
+| `externalAuth.timeout` | No | Timeout for the HTTP request as a Go duration string (e.g., `"5s"`, `"30s"`). Defaults to `"5s"`. |
 
 #### Webhook Request
 

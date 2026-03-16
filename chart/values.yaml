@@ -26,8 +26,8 @@ proxy:
     #   auth:
     #     - type: "password"
     #       # bcrypt hash of "alice-secret"
-    #       password_hash: "$2a$10$8K1p/a0dqbgX8K1p/a0dqOGp3lZ4wRcUWUzU8K1p/a0dq"
-    #       hash_type: "bcrypt"
+    #       passwordHash: "$2a$10$8K1p/a0dqbgX8K1p/a0dqOGp3lZ4wRcUWUzU8K1p/a0dq"
+    #       hashType: "bcrypt"
     #
     # # Bob: Public key authentication only
     # - username: "bob"
@@ -37,10 +37,10 @@ proxy:
     #     user: "bob"
     #     auth:
     #       type: "key"
-    #       key_path: "/path/to/bob/target/key"
+    #       keyPath: "/path/to/bob/target/key"
     #   auth:
     #     - type: "key"
-    #       authorized_keys:
+    #       authorizedKeys:
     #         - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7vbqajDw+3X0... bob@example.com"
     #         - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5X0... bob@laptop"
     #
@@ -57,10 +57,10 @@ proxy:
     #     - type: "password"
     #       password: "charlie-password1"
     #     - type: "password"
-    #       password_hash: "$2a$10$abcdefghijklmnop..."
-    #       hash_type: "bcrypt"
+    #       passwordHash: "$2a$10$abcdefghijklmnop..."
+    #       hashType: "bcrypt"
     #     - type: "key"
-    #       authorized_keys:
+    #       authorizedKeys:
     #         - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"
 
 serviceAccount:

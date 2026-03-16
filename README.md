@@ -17,7 +17,7 @@ Example Use Cases
 - **Regex-based routing**: Match usernames with regex patterns and use captured groups in target host templates
 - **Dynamic host templates**: Use Go templates in the target host field with regex capture groups
 - **Multiple authentication methods**: Support for both password and public key authentication
-- **Target host key verification**: Require explicit `host_key` or `insecure: true` per target for secure connections
+- **Target host key verification**: Require explicit `hostKey` or `insecure: true` per target for secure connections
 - **Custom authentication**: Implement custom authentication logic per user
   - helpful if jwt or other custom auth should be used.
 
@@ -70,10 +70,10 @@ routes:
       - type: "password"
         password: "charlie-password1"
       - type: "password"
-        password_hash: "$2a$10$abcdefghijklmnop..."
-        hash_type: "bcrypt"
+        passwordHash: "$2a$10$abcdefghijklmnop..."
+        hashType: "bcrypt"
       - type: "key"
-        authorized_keys:
+        authorizedKeys:
           - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"
 
   # Dynamic routing with regex: Match usernames like "dev-myapp", "prod-api"

@@ -41,12 +41,12 @@ type RouteMatch struct {
 
 // AuthMethod represents an authentication method for client connections
 type AuthMethod struct {
-	Type           string         `yaml:"type"`                      // "password", "key", "password_hash", or "external_auth"
-	Password       string         `yaml:"password,omitempty"`        // for password auth (plain text)
-	PasswordHash   string         `yaml:"password_hash,omitempty"`   // for hashed password auth
-	HashType       string         `yaml:"hash_type,omitempty"`       // hash algorithm used (bcrypt, sha256, etc.)
-	AuthorizedKeys []string       `yaml:"authorized_keys,omitempty"` // for key auth (inline public keys)
-	ExternalAuth   *WebhookConfig `yaml:"external_auth,omitempty"`   // for external auth via webhook
+	Type           string         `yaml:"type"`                     // "password", "key", "password_hash", or "external_auth"
+	Password       string         `yaml:"password,omitempty"`       // for password auth (plain text)
+	PasswordHash   string         `yaml:"passwordHash,omitempty"`   // for hashed password auth
+	HashType       string         `yaml:"hashType,omitempty"`       // hash algorithm used (bcrypt, sha256, etc.)
+	AuthorizedKeys []string       `yaml:"authorizedKeys,omitempty"` // for key auth (inline public keys)
+	ExternalAuth   *WebhookConfig `yaml:"externalAuth,omitempty"`   // for external auth via webhook
 }
 
 // Target represents the target SSH server configuration
@@ -55,15 +55,15 @@ type Target struct {
 	Port     int        `yaml:"port"`
 	User     string     `yaml:"user"`
 	Auth     TargetAuth `yaml:"auth"`
-	HostKey  string     `yaml:"host_key"` // known public key of the target server (e.g. "ssh-ed25519 AAAA..."); required if insecure is false
-	Insecure bool       `yaml:"insecure"` // skip host key verification; must be explicitly true if host_key is not set
+	HostKey  string     `yaml:"hostKey"`  // known public key of the target server (e.g. "ssh-ed25519 AAAA..."); required if insecure is false
+	Insecure bool       `yaml:"insecure"` // skip host key verification; must be explicitly true if hostKey is not set
 }
 
 // TargetAuth represents authentication configuration for target server connections
 type TargetAuth struct {
 	Type     string `yaml:"type"`     // "password", "key", or "password_hash"
 	Password string `yaml:"password"` // for password auth (plain text)
-	KeyPath  string `yaml:"key_path"` // for key auth (file path)
+	KeyPath  string `yaml:"keyPath"`  // for key auth (file path)
 }
 
 // WebhookConfig represents the configuration for an external authentication webhook.
@@ -334,10 +334,10 @@ func (c *Config) Validate() error {
 			allErrs = append(allErrs, validateAuthMethod(auth, authPath)...)
 		}
 
-		// Validate that either host_key or insecure is explicitly set
+		// Validate that either hostKey or insecure is explicitly set
 		targetPath := routePath.Child("target")
 		if route.Target.HostKey == "" && !route.Target.Insecure {
-			allErrs = append(allErrs, field.Required(targetPath.Child("host_key"), "target must set either host_key or insecure: true"))
+			allErrs = append(allErrs, field.Required(targetPath.Child("hostKey"), "target must set either hostKey or insecure: true"))
 		}
 	}
 
@@ -353,47 +353,47 @@ func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
 
 	switch auth.Type {
 	case "password":
-		// Must have either password or password_hash
+		// Must have either password or passwordHash
 		if auth.Password == "" && auth.PasswordHash == "" {
-			allErrs = append(allErrs, field.Required(fldPath.Child("password"), "password or password_hash is required for type \"password\""))
+			allErrs = append(allErrs, field.Required(fldPath.Child("password"), "password or passwordHash is required for type \"password\""))
 		}
-		// If password_hash is set, hash_type must also be set
+		// If passwordHash is set, hashType must also be set
 		if auth.PasswordHash != "" && auth.HashType == "" {
-			allErrs = append(allErrs, field.Required(fldPath.Child("hash_type"), "hash_type is required when password_hash is set"))
+			allErrs = append(allErrs, field.Required(fldPath.Child("hashType"), "hashType is required when passwordHash is set"))
 		}
 		// Forbidden fields
 		if len(auth.AuthorizedKeys) > 0 {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorized_keys"), "not allowed for type \"password\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorizedKeys"), "not allowed for type \"password\""))
 		}
 		if auth.ExternalAuth != nil {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("external_auth"), "not allowed for type \"password\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("externalAuth"), "not allowed for type \"password\""))
 		}
 
 	case "key":
-		// Must have authorized_keys
+		// Must have authorizedKeys
 		if len(auth.AuthorizedKeys) == 0 {
-			allErrs = append(allErrs, field.Required(fldPath.Child("authorized_keys"), "required for type \"key\""))
+			allErrs = append(allErrs, field.Required(fldPath.Child("authorizedKeys"), "required for type \"key\""))
 		}
 		// Forbidden fields
 		if auth.Password != "" {
 			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password"), "not allowed for type \"key\""))
 		}
 		if auth.PasswordHash != "" {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password_hash"), "not allowed for type \"key\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("passwordHash"), "not allowed for type \"key\""))
 		}
 		if auth.HashType != "" {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hash_type"), "not allowed for type \"key\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hashType"), "not allowed for type \"key\""))
 		}
 		if auth.ExternalAuth != nil {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("external_auth"), "not allowed for type \"key\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("externalAuth"), "not allowed for type \"key\""))
 		}
 
 	case "external_auth":
-		// Must have external_auth config with url
+		// Must have externalAuth config with url
 		if auth.ExternalAuth == nil {
-			allErrs = append(allErrs, field.Required(fldPath.Child("external_auth"), "required for type \"external_auth\""))
+			allErrs = append(allErrs, field.Required(fldPath.Child("externalAuth"), "required for type \"external_auth\""))
 		} else {
-			extPath := fldPath.Child("external_auth")
+			extPath := fldPath.Child("externalAuth")
 			if auth.ExternalAuth.URL == "" {
 				allErrs = append(allErrs, field.Required(extPath.Child("url"), "webhook url is required"))
 			}
@@ -408,13 +408,13 @@ func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password"), "not allowed for type \"external_auth\""))
 		}
 		if auth.PasswordHash != "" {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password_hash"), "not allowed for type \"external_auth\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("passwordHash"), "not allowed for type \"external_auth\""))
 		}
 		if auth.HashType != "" {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hash_type"), "not allowed for type \"external_auth\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hashType"), "not allowed for type \"external_auth\""))
 		}
 		if len(auth.AuthorizedKeys) > 0 {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorized_keys"), "not allowed for type \"external_auth\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorizedKeys"), "not allowed for type \"external_auth\""))
 		}
 
 	case "":

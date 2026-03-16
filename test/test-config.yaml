@@ -12,8 +12,8 @@ routes:
       password: "alice-secret"
   auth:
   - type: "password"
-    password_hash: "$2a$12$rTp1hn4YQPkQ8kws.u7GAOjjSwjrY3o.qCgwD8zn9CyreS4cV2ziy" # alice-secret
-    hash_type: "bcrypt"
+    passwordHash: "$2a$12$rTp1hn4YQPkQ8kws.u7GAOjjSwjrY3o.qCgwD8zn9CyreS4cV2ziy" # alice-secret
+    hashType: "bcrypt"
 - username: "bob"
   target:
     host: "ssh-server-bob"
@@ -25,8 +25,8 @@ routes:
       password: "bob-secret"
   auth:
   - type: "password"
-    password_hash: "$2a$12$XIqalxVLZ5R.PB1ur5SIHOUqyI8.38ALtc2eV4CKsgAafPvfGnvim" # bob-secret
-    hash_type: "bcrypt"
+    passwordHash: "$2a$12$XIqalxVLZ5R.PB1ur5SIHOUqyI8.38ALtc2eV4CKsgAafPvfGnvim" # bob-secret
+    hashType: "bcrypt"
 - username: "charlie"
   target:
     host: "ssh-server-alice"
@@ -38,8 +38,8 @@ routes:
       password: "alice-secret"
   auth:
   - type: "password"
-    password_hash: "$2a$12$M/I4H9XNzq/YXY4Dq7p.LOm39pfos/ii3dMk4qtFgqQcM4kvR3FFG" # charlie-secret
-    hash_type: "bcrypt"
+    passwordHash: "$2a$12$M/I4H9XNzq/YXY4Dq7p.LOm39pfos/ii3dMk4qtFgqQcM4kvR3FFG" # charlie-secret
+    hashType: "bcrypt"
   - type: "key"
-    authorized_keys:
+    authorizedKeys:
     - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAWLtFM2eLM5P4zvJxKz6i04sBQo9vwi7JfaTG5uTx3y schrodit@4b89774d-7284-4ee7-bbaa-cb5852de4ca7.fritz.box"
