@@ -24,6 +24,20 @@ import (
 
 var tracer = otel.Tracer("ssh-proxy")
 
+const maxKeyboardInteractiveRounds = 10
+
+type keyboardInteractiveChallenger interface {
+	Challenge(name, instruction string, questions []string, echos []bool) ([]string, error)
+}
+
+type sshKeyboardInteractiveChallenger struct {
+	challenge ssh.KeyboardInteractiveChallenge
+}
+
+func (c sshKeyboardInteractiveChallenger) Challenge(name, instruction string, questions []string, echos []bool) ([]string, error) {
+	return c.challenge(name, instruction, questions, echos)
+}
+
 // resolvedTarget contains all resolved values needed to connect to a target SSH server.
 // This decouples the connection logic from the config types and template resolution.
 type resolvedTarget struct {
@@ -65,8 +79,9 @@ func New(configManager *config.ConfigManager, host string, port int, hostKeyPath
 
 	// Configure SSH server
 	proxy.serverConfig = &ssh.ServerConfig{
-		PasswordCallback:  proxy.handlePasswordAuth,
-		PublicKeyCallback: proxy.handlePublicKeyAuth,
+		PasswordCallback:            proxy.handlePasswordAuth,
+		PublicKeyCallback:           proxy.handlePublicKeyAuth,
+		KeyboardInteractiveCallback: proxy.handleKeyboardInteractiveAuth,
 	}
 	proxy.serverConfig.AddHostKey(hostKey)
 
@@ -191,9 +206,11 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 	for _, authMethod := range route.Auth {
 		// Handle external auth (webhook)
 		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
-			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookAuthRequest{
-				Username: username,
-				AuthType: "password",
+			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPasswordAuthRequest{
+				WebhookAuthRequest: types.WebhookAuthRequest{
+					Username: username,
+					AuthType: "password",
+				},
 				Password: string(password),
 			})
 			if err != nil {
@@ -202,11 +219,7 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 			}
 			if allowed {
 				slog.Info("External auth password authentication successful", "username", username)
-				return &ssh.Permissions{
-					Extensions: map[string]string{
-						"username": username,
-					},
-				}, nil
+				return permissionsForUser(username), nil
 			}
 			slog.Debug("External auth denied password authentication", "username", username)
 			continue
@@ -230,11 +243,7 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 		// Verify password
 		if verifyPassword(string(password), passwordToVerify, authMethod.HashType) {
 			slog.Info("Password authentication successful", "username", username)
-			return &ssh.Permissions{
-				Extensions: map[string]string{
-					"username": username,
-				},
-			}, nil
+			return permissionsForUser(username), nil
 		}
 	}
 
@@ -255,9 +264,11 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 	for _, authMethod := range route.Auth {
 		// Handle external auth (webhook)
 		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
-			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookAuthRequest{
-				Username:  username,
-				AuthType:  "public_key",
+			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPublicKeyAuthRequest{
+				WebhookAuthRequest: types.WebhookAuthRequest{
+					Username: username,
+					AuthType: "public_key",
+				},
 				PublicKey: string(ssh.MarshalAuthorizedKey(key)),
 			})
 			if err != nil {
@@ -266,11 +277,7 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 			}
 			if allowed {
 				slog.Info("External auth public key authentication successful", "username", username)
-				return &ssh.Permissions{
-					Extensions: map[string]string{
-						"username": username,
-					},
-				}, nil
+				return permissionsForUser(username), nil
 			}
 			slog.Debug("External auth denied public key authentication", "username", username)
 			continue
@@ -284,17 +291,103 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 		for _, authorizedKey := range authMethod.AuthorizedKeys {
 			if comparePublicKeys(key, authorizedKey) {
 				slog.Info("Public key authentication successful", "username", username)
-				return &ssh.Permissions{
-					Extensions: map[string]string{
-						"username": username,
-					},
-				}, nil
+				return permissionsForUser(username), nil
 			}
 		}
 	}
 
 	slog.Warn("Public key authentication failed", "username", username)
 	return nil, fmt.Errorf("public key authentication failed")
+}
+
+func (p *SSHProxy) handleKeyboardInteractiveAuth(conn ssh.ConnMetadata, client ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+	username := conn.User()
+	match := p.configManager.FindRoute(username)
+	slog.Debug("Keyboard-interactive auth attempt", "username", username)
+	if match == nil {
+		return nil, fmt.Errorf("user not found")
+	}
+
+	challenger := sshKeyboardInteractiveChallenger{challenge: client}
+
+	for _, authMethod := range match.Route.Auth {
+		if authMethod.Type != "keyboard_interactive" || authMethod.ExternalAuth == nil {
+			continue
+		}
+
+		perms, err := authenticateKeyboardInteractive(username, conn.SessionID(), authMethod.ExternalAuth, challenger)
+		if err != nil {
+			slog.Error("Keyboard-interactive authentication failed", "error", err, "username", username)
+			continue
+		}
+		if perms != nil {
+			slog.Info("Keyboard-interactive authentication successful", "username", username)
+			return perms, nil
+		}
+	}
+
+	slog.Warn("Keyboard-interactive authentication failed", "username", username)
+	return nil, fmt.Errorf("keyboard-interactive authentication failed")
+}
+
+func authenticateKeyboardInteractive(username string, sessionID []byte, cfg *config.WebhookConfig, challenger keyboardInteractiveChallenger) (*ssh.Permissions, error) {
+	req := &types.WebhookKeyboardInteractiveAuthRequest{
+		WebhookAuthRequest: types.WebhookAuthRequest{
+			Username: username,
+			AuthType: "keyboard_interactive",
+		},
+		SessionID: hex.EncodeToString(sessionID),
+	}
+
+	for round := 0; round < maxKeyboardInteractiveRounds; round++ {
+		req.ChallengeRound = round
+
+		challengeResp, allowed, err := callKeyboardInteractiveWebhook(cfg, req)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			return permissionsForUser(username), nil
+		}
+		if challengeResp == nil {
+			return nil, nil
+		}
+		if len(challengeResp.Questions) == 0 {
+			return nil, fmt.Errorf("keyboard-interactive webhook returned no questions")
+		}
+
+		echos, err := normalizeChallengeEchos(challengeResp)
+		if err != nil {
+			return nil, err
+		}
+
+		answers, err := challenger.Challenge(challengeResp.Name, challengeResp.Instruction, challengeResp.Questions, echos)
+		if err != nil {
+			return nil, fmt.Errorf("collecting keyboard-interactive answers: %w", err)
+		}
+
+		req.Answers = answers
+	}
+
+	return nil, fmt.Errorf("keyboard-interactive authentication exceeded %d challenge rounds", maxKeyboardInteractiveRounds)
+}
+
+func normalizeChallengeEchos(challenge *types.WebhookKeyboardInteractiveResponse) ([]bool, error) {
+	if len(challenge.Echos) == 0 {
+		return make([]bool, len(challenge.Questions)), nil
+	}
+	if len(challenge.Echos) != len(challenge.Questions) {
+		return nil, fmt.Errorf("keyboard-interactive webhook returned %d echo flags for %d questions", len(challenge.Echos), len(challenge.Questions))
+	}
+	return challenge.Echos, nil
+}
+
+func permissionsForUser(username string) *ssh.Permissions {
+	return &ssh.Permissions{
+		Extensions: map[string]string{
+			"username": username,
+		},
+	}
 }
 
 func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {

@@ -39,6 +39,7 @@ routes:
     host: "example.com"
     port: 2222
     user: "charlie"
+    insecure: true
     auth:
       type: "password"
       password: "charlie-target-password"
@@ -58,6 +59,7 @@ routes:
     host: "{{.Named.env}}-{{.Named.service}}.internal"
     port: 22
     user: "deploy"
+    insecure: true
     auth:
       type: "password"
       password: "deploy-secret"

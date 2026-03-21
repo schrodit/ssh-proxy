@@ -5,6 +5,7 @@ tmp
 dist
 
 vendor
+.gocache
 
 # IDE files
 .vscode

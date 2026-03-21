@@ -165,7 +165,18 @@ auth:
 
 #### Webhook Request
 
-The proxy sends a `POST` request with `Content-Type: application/json` to the configured URL. The JSON body has the following structure:
+The proxy sends a `POST` request with `Content-Type: application/json` to the configured URL. Every auth webhook request includes the same base fields:
+
+```json
+{
+  "username": "alice",
+  "auth_type": "password"
+}
+```
+
+Depending on `auth_type`, the request then includes auth-specific fields.
+
+For password authentication:
 
 ```json
 {
@@ -204,28 +215,104 @@ The webhook communicates its decision via HTTP status code:
 
 The response body is ignored.
 
+### Keyboard-Interactive Authentication
+
+The `keyboard_interactive` type delegates RFC 4256 keyboard-interactive authentication to a dedicated webhook endpoint. This is useful for OTP, MFA, or custom challenge/response flows that need one or more prompt rounds.
+
+#### Configuration
+
+```yaml
+auth:
+  - type: "keyboard_interactive"
+    externalAuth:
+      url: "https://auth.example.com/ssh/challenge"
+      headers:
+        Authorization: "Bearer my-api-token"
+      timeout: "10s"
+```
+
+#### Fields
+
+| Field | Required | Description |
+|-------|----------|-----------|
+| `externalAuth.url` | Yes | The URL of the dedicated challenge webhook endpoint. |
+| `externalAuth.headers` | No | A map of HTTP headers to include in the request. |
+| `externalAuth.timeout` | No | Timeout for the HTTP request as a Go duration string. Defaults to `"5s"`. |
+
+#### Webhook Request
+
+Keyboard-interactive requests use the same base webhook fields and add challenge state for each round.
+
+The initial challenge request looks like this:
+
+```json
+{
+  "username": "alice",
+  "auth_type": "keyboard_interactive",
+  "session_id": "deadbeef",
+  "challenge_round": 0
+}
+```
+
+After the webhook returns a `202 Accepted` challenge, the proxy prompts the SSH client and sends the next round including the collected answers:
+
+```json
+{
+  "username": "alice",
+  "auth_type": "keyboard_interactive",
+  "session_id": "deadbeef",
+  "challenge_round": 1,
+  "answers": ["123456"]
+}
+```
+
+#### Webhook Response
+
+| Status Code | Meaning |
+|-------------|---------|
+| `200 OK` | Authentication succeeded. |
+| `401 Unauthorized` | Authentication failed. |
+| `202 Accepted` | Present another keyboard-interactive challenge using the JSON response body below, then expect the next request to include the user's answers. |
+
+For `202 Accepted`, the response body must contain:
+
+```json
+{
+  "name": "MFA required",
+  "instruction": "Enter your one-time code",
+  "questions": ["OTP"],
+  "echos": [false]
+}
+```
+
 #### Example Webhook Server (Go)
 
 ```go
 http.HandleFunc("/ssh/verify", func(w http.ResponseWriter, r *http.Request) {
-    var req struct {
-        Username string `json:"username"`
-        AuthType string `json:"auth_type"`
-        Password string `json:"password,omitempty"`
-        PublicKey string `json:"public_key,omitempty"`
-    }
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    payload, err := io.ReadAll(r.Body)
+    if err != nil {
         http.Error(w, "bad request", http.StatusBadRequest)
         return
     }
 
-    // Your authentication logic here
-    if req.Username == "alice" && req.Password == "secret" {
-        w.WriteHeader(http.StatusOK)
+    var base struct {
+        Username string `json:"username"`
+        AuthType string `json:"auth_type"`
+    }
+    if err := json.Unmarshal(payload, &base); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
         return
     }
 
-    w.WriteHeader(http.StatusUnauthorized)
+    switch base.AuthType {
+    case "password":
+        // Decode payload into your password request type here.
+    case "public_key":
+        // Decode payload into your public-key request type here.
+    case "keyboard_interactive":
+        // Decode payload into your keyboard-interactive request type here.
+        // Return 202 with questions, 200 on success, or 401 on denial.
+    }
 })
 ```
 
