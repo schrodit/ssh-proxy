@@ -26,6 +26,11 @@ var tracer = otel.Tracer("ssh-proxy")
 
 const maxKeyboardInteractiveRounds = 10
 
+const (
+	openSSHHostKeysRequest      = "hostkeys-00@openssh.com"
+	openSSHHostKeysProveRequest = "hostkeys-prove-00@openssh.com"
+)
+
 type keyboardInteractiveChallenger interface {
 	Challenge(name, instruction string, questions []string, echos []bool) ([]string, error)
 }
@@ -588,8 +593,33 @@ func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newCh
 	wg.Wait()
 }
 
+func shouldHandleRequestLocally(req *ssh.Request) (handled bool, replyOK bool, replyPayload []byte) {
+	switch req.Type {
+	case openSSHHostKeysRequest:
+		// UpdateHostKeys is scoped to the proxy's server identity, so forwarding it to
+		// the target would advertise or validate the wrong host keys.
+		return true, false, nil
+	case openSSHHostKeysProveRequest:
+		// We do not advertise UpdateHostKeys today, so reject proofs locally instead of
+		// asking the target to prove ownership of keys the client did not negotiate with.
+		return true, false, nil
+	default:
+		return false, false, nil
+	}
+}
+
 func (p *SSHProxy) handleRequest(targetConn ssh.Conn, req *ssh.Request) {
 	slog.Debug("Handle request", "request_type", req.Type)
+	if handled, reply, replyPayload := shouldHandleRequestLocally(req); handled {
+		slog.Debug("Handled request locally", "request_type", req.Type, "want_reply", req.WantReply)
+		if req.WantReply {
+			if err := req.Reply(reply, replyPayload); err != nil {
+				slog.Error("Failed to reply to local request", "error", err, "request_type", req.Type)
+			}
+		}
+		return
+	}
+
 	reply, replyPayload, err := targetConn.SendRequest(req.Type, req.WantReply, req.Payload)
 	if err != nil {
 		slog.Error("Failed to forward request", "error", err)
