@@ -11,6 +11,10 @@ fullnameOverride: ""
 
 proxy:
   logLevel: "info"
+  hostKey:
+    # PEM or OpenSSH private key used as the SSH server host key.
+    # When empty, the container falls back to the application's default host key behavior.
+    privateKey: ""
   config: {}
     # # SSH Proxy Configuration - Routing rules based on username
     # routes:

@@ -50,6 +50,10 @@ spec:
           - "8080"
           - "-log-level"
           - "{{ .Values.proxy.logLevel }}"
+          {{- if .Values.proxy.hostKey.privateKey }}
+          - "-hostkey"
+          - "/proxy/ssh_host_key"
+          {{- end }}
           ports:
             - name: ssh
               containerPort: 2222
@@ -87,6 +91,10 @@ spec:
             items:
               - key: config.yaml
                 path: config.yaml
+              {{- if .Values.proxy.hostKey.privateKey }}
+              - key: ssh_host_key
+                path: ssh_host_key
+              {{- end }}
             optional: false
       {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}

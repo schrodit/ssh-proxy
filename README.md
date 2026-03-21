@@ -131,6 +131,8 @@ Or provide a values file with your full routing configuration:
 helm install ssh-proxy ./chart -f my-values.yaml
 ```
 
+To provide a fixed SSH host key for the proxy server, set `proxy.hostKey.privateKey` in your values file. If omitted, the container uses the application's default host key lookup and generation behavior.
+
 See [chart/values.yaml](./chart/values.yaml) for all available Helm values.
 
 ## Development
