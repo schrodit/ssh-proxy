@@ -173,7 +173,7 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 	slog.Info("User authenticated, routing to target", "username", username, "target_host", target.Host, "target_port", target.Port)
 
 	// Establish connection to target SSH server
-	targetConn, err := p.connectToTarget(target)
+	targetConn, targetChans, targetReqs, err := p.connectToTarget(target)
 	if err != nil {
 		slog.Error("Failed to connect to target", "error", err)
 		return
@@ -188,7 +188,7 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 	slog.Info("Session started", "username", username)
 
 	// Handle SSH channels and requests
-	p.proxySSHConnection(sshConn, targetConn, chans, reqs)
+	p.proxySSHConnection(sshConn, targetConn, chans, reqs, targetChans, targetReqs)
 
 	slog.Info("Session ended", "username", username)
 }
@@ -390,8 +390,8 @@ func permissionsForUser(username string) *ssh.Permissions {
 	}
 }
 
-func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {
-	targetAddr := fmt.Sprintf("%s:%d", target.Host, target.Port)
+func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+	targetAddr := net.JoinHostPort(target.Host, fmt.Sprintf("%d", target.Port))
 
 	// Configure client based on target auth type
 	var auth []ssh.AuthMethod
@@ -403,27 +403,37 @@ func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {
 	case "key":
 		key, err := loadPrivateKey(target.AuthKeyPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load private key: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to load private key: %w", err)
 		}
 		auth = []ssh.AuthMethod{
 			ssh.PublicKeys(key),
 		}
 	default:
-		return nil, fmt.Errorf("unsupported target auth type: %s", target.AuthType)
+		return nil, nil, nil, fmt.Errorf("unsupported target auth type: %s", target.AuthType)
 	}
 
-	config := &ssh.ClientConfig{
+	clientConfig := &ssh.ClientConfig{
 		User:            target.User,
 		Auth:            auth,
 		HostKeyCallback: target.HostKeyCallback,
 	}
 
-	conn, err := ssh.Dial("tcp", targetAddr, config)
+	// Use NewClientConn instead of Dial so we receive server-initiated channels
+	// (e.g. X11, direct-tcpip) rather than having them silently rejected.
+	netConn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to target SSH server: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to connect to target SSH server: %w", err)
 	}
 
-	return conn, nil
+	conn, chans, reqs, err := ssh.NewClientConn(netConn, targetAddr, clientConfig)
+	if err != nil {
+		if err := netConn.Close(); err != nil {
+			slog.Error("Failed to close network connection after SSH handshake failure", "error", err)
+		}
+		return nil, nil, nil, fmt.Errorf("failed to establish SSH connection to target: %w", err)
+	}
+
+	return conn, chans, reqs, nil
 }
 
 // buildHostKeyCallback creates an ssh.HostKeyCallback based on the target configuration.
@@ -441,10 +451,17 @@ func buildHostKeyCallback(target config.Target) (ssh.HostKeyCallback, error) {
 	return ssh.InsecureIgnoreHostKey(), nil
 }
 
-func (p *SSHProxy) proxySSHConnection(clientConn ssh.Conn, targetConn ssh.Conn, chans <-chan ssh.NewChannel, reqs <-chan *ssh.Request) {
+func (p *SSHProxy) proxySSHConnection(
+	clientConn ssh.Conn,
+	targetConn ssh.Conn,
+	chans <-chan ssh.NewChannel,
+	reqs <-chan *ssh.Request,
+	targetChans <-chan ssh.NewChannel,
+	targetReqs <-chan *ssh.Request,
+) {
 	var wg sync.WaitGroup
 
-	// Handle incoming channels
+	// Handle channels from client → target
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -453,7 +470,16 @@ func (p *SSHProxy) proxySSHConnection(clientConn ssh.Conn, targetConn ssh.Conn, 
 		}
 	}()
 
-	// Handle incoming requests
+	// Handle channels from target → client (e.g. X11 forwarding)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for newChannel := range targetChans {
+			p.handleReverseChannel(clientConn, newChannel)
+		}
+	}()
+
+	// Handle global requests from client → target
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -462,48 +488,24 @@ func (p *SSHProxy) proxySSHConnection(clientConn ssh.Conn, targetConn ssh.Conn, 
 		}
 	}()
 
+	// Handle global requests from target → client
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for req := range targetReqs {
+			p.handleRequest(clientConn, req)
+		}
+	}()
+
 	wg.Wait()
 }
 
-func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newChannel ssh.NewChannel) {
-	_, span := tracer.Start(context.Background(), "handleChannel")
-	defer span.End()
-	log := slog.With("session_id", span.SpanContext().TraceID().String())
-	// Open corresponding channel on target
-	targetChannel, targetReqs, err := targetConn.OpenChannel(newChannel.ChannelType(), newChannel.ExtraData())
-	if err != nil {
-		slog.Error("Failed to open channel on target", "error", err)
-		if err := newChannel.Reject(ssh.Prohibited, "target rejected channel"); err != nil {
-			slog.Error("Failed to reject channel", "error", err)
-		}
-		return
-	}
-	defer func() {
-		if err := targetChannel.Close(); err != nil {
-			log.Error("Failed to close target channel", "error", err)
-		}
-		log.Debug("Target channel closed", "channel_type", newChannel.ChannelType())
-	}()
-
-	// Accept the channel from client
-	clientChannel, clientReqs, err := newChannel.Accept()
-	if err != nil {
-		log.Error("Failed to accept channel", "error", err)
-		return
-	}
-	defer func() {
-		if err := clientChannel.Close(); err != nil {
-			log.Error("Failed to close client channel", "error", err)
-		}
-		log.Debug("Client channel closed", "channel_type", newChannel.ChannelType())
-	}()
-
-	log.Debug("Channel opened", "channel_type", newChannel.ChannelType())
-
+// proxyChannels bidirectionally proxies data and per-channel requests between a
+// client and target SSH channel pair. It blocks until both sides are done.
+func proxyChannels(clientChannel, targetChannel ssh.Channel, clientReqs, targetReqs <-chan *ssh.Request, log *slog.Logger) {
 	targetWg := sync.WaitGroup{}
 	clientWg := sync.WaitGroup{}
 
-	// Proxy data between channels with proper EOF handling
 	clientWg.Go(func() {
 		defer func() {
 			if err := targetChannel.CloseWrite(); err != nil {
@@ -529,12 +531,8 @@ func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newCh
 		}
 	})
 
-	// Proxy requests between channels
 	clientWg.Go(func() {
-		defer func() {
-			//targetChannel.Close()
-			log.Debug("Client to target request stream closed")
-		}()
+		defer log.Debug("Client to target request stream closed")
 		for req := range clientReqs {
 			log.Debug("Forwarding request from client to target", "request_type", req.Type)
 			reply, err := targetChannel.SendRequest(req.Type, req.WantReply, req.Payload)
@@ -549,15 +547,12 @@ func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newCh
 		}
 	})
 	targetWg.Go(func() {
-		defer func() {
-			//clientChannel.Close()
-			log.Debug("Target to client request stream closed")
-		}()
+		defer log.Debug("Target to client request stream closed")
 		for req := range targetReqs {
 			log.Debug("Forwarding request from target to client", "request_type", req.Type)
 			reply, err := clientChannel.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
-				log.Error("Failed to forward exit request to client", "error", err)
+				log.Error("Failed to forward request to client", "error", err)
 				return
 			}
 			if req.WantReply {
@@ -572,7 +567,7 @@ func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newCh
 	wg.Go(func() {
 		defer func() {
 			if err := clientChannel.Close(); err != nil {
-				log.Error("Failed to close client channel in wait group", "error", err)
+				log.Error("Failed to close client channel", "error", err)
 			}
 		}()
 		targetWg.Wait()
@@ -580,12 +575,78 @@ func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newCh
 	wg.Go(func() {
 		defer func() {
 			if err := targetChannel.Close(); err != nil {
-				log.Error("Failed to close target channel in wait group", "error", err)
+				log.Error("Failed to close target channel", "error", err)
 			}
 		}()
 		clientWg.Wait()
 	})
 	wg.Wait()
+}
+
+func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newChannel ssh.NewChannel) {
+	_, span := tracer.Start(context.Background(), "handleChannel")
+	defer span.End()
+	log := slog.With("session_id", span.SpanContext().TraceID().String())
+
+	// Open corresponding channel on target
+	targetChannel, targetReqs, err := targetConn.OpenChannel(newChannel.ChannelType(), newChannel.ExtraData())
+	if err != nil {
+		slog.Error("Failed to open channel on target", "error", err)
+		if err := newChannel.Reject(ssh.Prohibited, "target rejected channel"); err != nil {
+			slog.Error("Failed to reject channel", "error", err)
+		}
+		return
+	}
+
+	// Accept the channel from client
+	clientChannel, clientReqs, err := newChannel.Accept()
+	if err != nil {
+		log.Error("Failed to accept channel", "error", err)
+		if err := targetChannel.Close(); err != nil {
+			log.Error("Failed to close target channel after accept failure", "error", err)
+		}
+		return
+	}
+
+	log.Debug("Channel opened", "channel_type", newChannel.ChannelType())
+	proxyChannels(clientChannel, targetChannel, clientReqs, targetReqs, log)
+	log.Debug("Channel closed", "channel_type", newChannel.ChannelType())
+}
+
+// handleReverseChannel handles channels opened by the target server and forwards them
+// to the client. This is required for X11 forwarding and reverse port forwarding,
+// where the target SSH server initiates a channel back through the proxy.
+func (p *SSHProxy) handleReverseChannel(clientConn ssh.Conn, newChannel ssh.NewChannel) {
+	_, span := tracer.Start(context.Background(), "handleReverseChannel")
+	defer span.End()
+	log := slog.With("session_id", span.SpanContext().TraceID().String())
+
+	log.Debug("Target opened reverse channel", "channel_type", newChannel.ChannelType())
+
+	// Open corresponding channel on client first; if the client rejects it,
+	// reject the target's request too.
+	clientChannel, clientReqs, err := clientConn.OpenChannel(newChannel.ChannelType(), newChannel.ExtraData())
+	if err != nil {
+		log.Error("Failed to open reverse channel on client", "error", err, "channel_type", newChannel.ChannelType())
+		if err := newChannel.Reject(ssh.Prohibited, "client rejected channel"); err != nil {
+			log.Error("Failed to reject reverse channel", "error", err)
+		}
+		return
+	}
+
+	// Accept the channel from the target
+	targetChannel, targetReqs, err := newChannel.Accept()
+	if err != nil {
+		log.Error("Failed to accept reverse channel from target", "error", err)
+		if err := clientChannel.Close(); err != nil {
+			log.Error("Failed to close client channel after accept failure", "error", err)
+		}
+		return
+	}
+
+	log.Debug("Reverse channel opened", "channel_type", newChannel.ChannelType())
+	proxyChannels(clientChannel, targetChannel, clientReqs, targetReqs, log)
+	log.Debug("Reverse channel closed", "channel_type", newChannel.ChannelType())
 }
 
 func (p *SSHProxy) handleRequest(targetConn ssh.Conn, req *ssh.Request) {
