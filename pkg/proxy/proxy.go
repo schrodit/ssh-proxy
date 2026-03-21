@@ -4,10 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,32 +15,16 @@ import (
 	"sync"
 
 	"github.com/schrodit/ssh-proxy/pkg/config"
-	"github.com/schrodit/ssh-proxy/pkg/types"
 	"go.opentelemetry.io/otel"
-	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/ssh"
 )
 
 var tracer = otel.Tracer("ssh-proxy")
 
-const maxKeyboardInteractiveRounds = 10
-
 const (
 	openSSHHostKeysRequest      = "hostkeys-00@openssh.com"
 	openSSHHostKeysProveRequest = "hostkeys-prove-00@openssh.com"
 )
-
-type keyboardInteractiveChallenger interface {
-	Challenge(name, instruction string, questions []string, echos []bool) ([]string, error)
-}
-
-type sshKeyboardInteractiveChallenger struct {
-	challenge ssh.KeyboardInteractiveChallenge
-}
-
-func (c sshKeyboardInteractiveChallenger) Challenge(name, instruction string, questions []string, echos []bool) ([]string, error) {
-	return c.challenge(name, instruction, questions, echos)
-}
 
 // resolvedTarget contains all resolved values needed to connect to a target SSH server.
 // This decouples the connection logic from the config types and template resolution.
@@ -63,6 +46,12 @@ type SSHProxy struct {
 	hostKeyPath   string
 	hostKey       ssh.Signer
 	serverConfig  *ssh.ServerConfig
+}
+
+type proxiedSSHConnection struct {
+	conn  ssh.Conn
+	chans <-chan ssh.NewChannel
+	reqs  <-chan *ssh.Request
 }
 
 // New creates a new SSH proxy instance
@@ -121,7 +110,7 @@ func (p *SSHProxy) Start() error {
 
 func (p *SSHProxy) handleConnection(conn net.Conn) {
 	defer func() {
-		if err := conn.Close(); err != nil {
+		if err := conn.Close(); shouldLogConnCloseError(err) {
 			slog.Error("Failed to close client connection", "error", err)
 		}
 		slog.Info("Client connection closed")
@@ -134,7 +123,7 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 		return
 	}
 	defer func() {
-		if err := sshConn.Close(); err != nil {
+		if err := sshConn.Close(); shouldLogConnCloseError(err) {
 			slog.Error("Failed to close SSH connection", "error", err)
 		}
 		slog.Info("SSH connection closed")
@@ -184,7 +173,7 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 		return
 	}
 	defer func() {
-		if err := targetConn.Close(); err != nil {
+		if err := targetConn.conn.Close(); shouldLogConnCloseError(err) {
 			slog.Error("Failed to close target connection", "error", err)
 		}
 		slog.Info("Target connection closed", "username", username)
@@ -198,205 +187,8 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 	slog.Info("Session ended", "username", username)
 }
 
-func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-	username := conn.User()
-	match := p.configManager.FindRoute(username)
-	slog.Debug("Password auth attempt", "username", username)
-	if match == nil {
-		return nil, fmt.Errorf("user not found")
-	}
-	route := match.Route
-
-	// Check all auth methods for password authentication
-	for _, authMethod := range route.Auth {
-		// Handle external auth (webhook)
-		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
-			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPasswordAuthRequest{
-				WebhookAuthRequest: types.WebhookAuthRequest{
-					Username: username,
-					AuthType: types.WebhookAuthTypePassword,
-				},
-				Password: string(password),
-			})
-			if err != nil {
-				slog.Error("External auth request failed", "error", err, "username", username)
-				continue
-			}
-			if allowed {
-				slog.Info("External auth password authentication successful", "username", username)
-				return permissionsForUser(username), nil
-			}
-			slog.Debug("External auth denied password authentication", "username", username)
-			continue
-		}
-
-		if authMethod.Type != "password" {
-			continue
-		}
-
-		// Determine which password to verify against
-		passwordToVerify := authMethod.Password
-		if authMethod.PasswordHash != "" {
-			passwordToVerify = authMethod.PasswordHash
-		}
-
-		// Skip if no password is configured
-		if passwordToVerify == "" {
-			continue
-		}
-
-		// Verify password
-		if verifyPassword(string(password), passwordToVerify, authMethod.HashType) {
-			slog.Info("Password authentication successful", "username", username)
-			return permissionsForUser(username), nil
-		}
-	}
-
-	slog.Warn("Password authentication failed", "username", username)
-	return nil, fmt.Errorf("password authentication failed")
-}
-
-func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-	username := conn.User()
-	match := p.configManager.FindRoute(username)
-	slog.Debug("Public key auth attempt", "username", username)
-	if match == nil {
-		return nil, fmt.Errorf("user not found")
-	}
-	route := match.Route
-
-	// Check all auth methods for public key authentication
-	for _, authMethod := range route.Auth {
-		// Handle external auth (webhook)
-		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
-			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPublicKeyAuthRequest{
-				WebhookAuthRequest: types.WebhookAuthRequest{
-					Username: username,
-					AuthType: types.WebhookAuthTypePublicKey,
-				},
-				PublicKey: string(ssh.MarshalAuthorizedKey(key)),
-			})
-			if err != nil {
-				slog.Error("External auth request failed", "error", err, "username", username)
-				continue
-			}
-			if allowed {
-				slog.Info("External auth public key authentication successful", "username", username)
-				return permissionsForUser(username), nil
-			}
-			slog.Debug("External auth denied public key authentication", "username", username)
-			continue
-		}
-
-		if authMethod.Type != "key" {
-			continue
-		}
-
-		// Check if the provided key matches any authorized key in this auth method
-		for _, authorizedKey := range authMethod.AuthorizedKeys {
-			if comparePublicKeys(key, authorizedKey) {
-				slog.Info("Public key authentication successful", "username", username)
-				return permissionsForUser(username), nil
-			}
-		}
-	}
-
-	slog.Warn("Public key authentication failed", "username", username)
-	return nil, fmt.Errorf("public key authentication failed")
-}
-
-func (p *SSHProxy) handleKeyboardInteractiveAuth(conn ssh.ConnMetadata, client ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
-	username := conn.User()
-	match := p.configManager.FindRoute(username)
-	slog.Debug("Keyboard-interactive auth attempt", "username", username)
-	if match == nil {
-		return nil, fmt.Errorf("user not found")
-	}
-
-	challenger := sshKeyboardInteractiveChallenger{challenge: client}
-
-	for _, authMethod := range match.Route.Auth {
-		if authMethod.Type != "keyboard_interactive" || authMethod.ExternalAuth == nil {
-			continue
-		}
-
-		perms, err := authenticateKeyboardInteractive(username, conn.SessionID(), authMethod.ExternalAuth, challenger)
-		if err != nil {
-			slog.Error("Keyboard-interactive authentication failed", "error", err, "username", username)
-			continue
-		}
-		if perms != nil {
-			slog.Info("Keyboard-interactive authentication successful", "username", username)
-			return perms, nil
-		}
-	}
-
-	slog.Warn("Keyboard-interactive authentication failed", "username", username)
-	return nil, fmt.Errorf("keyboard-interactive authentication failed")
-}
-
-func authenticateKeyboardInteractive(username string, sessionID []byte, cfg *config.WebhookConfig, challenger keyboardInteractiveChallenger) (*ssh.Permissions, error) {
-	req := &types.WebhookKeyboardInteractiveAuthRequest{
-		WebhookAuthRequest: types.WebhookAuthRequest{
-			Username: username,
-			AuthType: types.WebhookAuthTypeKeyboardInteractive,
-		},
-		SessionID: hex.EncodeToString(sessionID),
-	}
-
-	for round := 0; round < maxKeyboardInteractiveRounds; round++ {
-		req.ChallengeRound = round
-
-		challengeResp, allowed, err := callKeyboardInteractiveWebhook(cfg, req)
-		if err != nil {
-			return nil, err
-		}
-		if allowed {
-			return permissionsForUser(username), nil
-		}
-		if challengeResp == nil {
-			return nil, nil
-		}
-		if len(challengeResp.Questions) == 0 {
-			return nil, fmt.Errorf("keyboard-interactive webhook returned no questions")
-		}
-
-		echos, err := normalizeChallengeEchos(challengeResp)
-		if err != nil {
-			return nil, err
-		}
-
-		answers, err := challenger.Challenge(challengeResp.Name, challengeResp.Instruction, challengeResp.Questions, echos)
-		if err != nil {
-			return nil, fmt.Errorf("collecting keyboard-interactive answers: %w", err)
-		}
-
-		req.Answers = answers
-	}
-
-	return nil, fmt.Errorf("keyboard-interactive authentication exceeded %d challenge rounds", maxKeyboardInteractiveRounds)
-}
-
-func normalizeChallengeEchos(challenge *types.WebhookKeyboardInteractiveResponse) ([]bool, error) {
-	if len(challenge.Echos) == 0 {
-		return make([]bool, len(challenge.Questions)), nil
-	}
-	if len(challenge.Echos) != len(challenge.Questions) {
-		return nil, fmt.Errorf("keyboard-interactive webhook returned %d echo flags for %d questions", len(challenge.Echos), len(challenge.Questions))
-	}
-	return challenge.Echos, nil
-}
-
-func permissionsForUser(username string) *ssh.Permissions {
-	return &ssh.Permissions{
-		Extensions: map[string]string{
-			"username": username,
-		},
-	}
-}
-
-func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {
-	targetAddr := fmt.Sprintf("%s:%d", target.Host, target.Port)
+func (p *SSHProxy) connectToTarget(target *resolvedTarget) (*proxiedSSHConnection, error) {
+	targetAddr := net.JoinHostPort(target.Host, fmt.Sprintf("%d", target.Port))
 
 	// Configure client based on target auth type
 	var auth []ssh.AuthMethod
@@ -423,12 +215,24 @@ func (p *SSHProxy) connectToTarget(target *resolvedTarget) (ssh.Conn, error) {
 		HostKeyCallback: target.HostKeyCallback,
 	}
 
-	conn, err := ssh.Dial("tcp", targetAddr, config)
+	rawConn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to target SSH server: %w", err)
 	}
 
-	return conn, nil
+	conn, chans, reqs, err := ssh.NewClientConn(rawConn, targetAddr, config)
+	if err != nil {
+		if closeErr := rawConn.Close(); closeErr != nil {
+			slog.Error("Failed to close raw target connection after handshake error", "error", closeErr)
+		}
+		return nil, fmt.Errorf("failed to connect to target SSH server: %w", err)
+	}
+
+	return &proxiedSSHConnection{
+		conn:  conn,
+		chans: chans,
+		reqs:  reqs,
+	}, nil
 }
 
 // buildHostKeyCallback creates an ssh.HostKeyCallback based on the target configuration.
@@ -446,128 +250,164 @@ func buildHostKeyCallback(target config.Target) (ssh.HostKeyCallback, error) {
 	return ssh.InsecureIgnoreHostKey(), nil
 }
 
-func (p *SSHProxy) proxySSHConnection(clientConn ssh.Conn, targetConn ssh.Conn, chans <-chan ssh.NewChannel, reqs <-chan *ssh.Request) {
+func (p *SSHProxy) proxySSHConnection(clientConn ssh.Conn, targetConn *proxiedSSHConnection, chans <-chan ssh.NewChannel, reqs <-chan *ssh.Request) {
 	var wg sync.WaitGroup
+	var channelWg sync.WaitGroup
 
-	// Handle incoming channels
+	// Close the peer connection when either side disconnects so both request/channel
+	// streams terminate and the proxy can shut down cleanly.
+	go func() {
+		_ = clientConn.Wait()
+		_ = targetConn.conn.Close()
+	}()
+	go func() {
+		_ = targetConn.conn.Wait()
+		_ = clientConn.Close()
+	}()
+
+	// Handle incoming channels from the client.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for newChannel := range chans {
-			p.handleChannel(clientConn, targetConn, newChannel)
+			channelWg.Add(1)
+			go func(channel ssh.NewChannel) {
+				defer channelWg.Done()
+				p.handleChannel("client", clientConn, "target", targetConn.conn, channel)
+			}(newChannel)
 		}
 	}()
 
-	// Handle incoming requests
+	// Handle incoming channels from the target.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for newChannel := range targetConn.chans {
+			channelWg.Add(1)
+			go func(channel ssh.NewChannel) {
+				defer channelWg.Done()
+				p.handleChannel("target", targetConn.conn, "client", clientConn, channel)
+			}(newChannel)
+		}
+	}()
+
+	// Handle incoming requests from the client.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for req := range reqs {
-			p.handleRequest(targetConn, req)
+			p.handleRequest("client", "target", targetConn.conn, req)
+		}
+	}()
+
+	// Handle incoming requests from the target.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for req := range targetConn.reqs {
+			p.handleRequest("target", "client", clientConn, req)
 		}
 	}()
 
 	wg.Wait()
+	channelWg.Wait()
 }
 
-func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newChannel ssh.NewChannel) {
+func (p *SSHProxy) handleChannel(sourceName string, sourceConn ssh.Conn, destinationName string, destinationConn ssh.Conn, newChannel ssh.NewChannel) {
 	_, span := tracer.Start(context.Background(), "handleChannel")
 	defer span.End()
-	log := slog.With("session_id", span.SpanContext().TraceID().String())
-	// Open corresponding channel on target
-	targetChannel, targetReqs, err := targetConn.OpenChannel(newChannel.ChannelType(), newChannel.ExtraData())
+	log := slog.With(
+		"session_id", span.SpanContext().TraceID().String(),
+		"channel_type", newChannel.ChannelType(),
+		"source", sourceName,
+		"destination", destinationName,
+	)
+
+	// Open the corresponding channel on the destination side first so we can reject
+	// the incoming channel cleanly if the peer does not support it.
+	destinationChannel, destinationReqs, err := destinationConn.OpenChannel(newChannel.ChannelType(), newChannel.ExtraData())
 	if err != nil {
-		slog.Error("Failed to open channel on target", "error", err)
-		if err := newChannel.Reject(ssh.Prohibited, "target rejected channel"); err != nil {
+		log.Error("Failed to open channel on destination", "error", err)
+		if err := newChannel.Reject(ssh.Prohibited, "destination rejected channel"); err != nil {
 			slog.Error("Failed to reject channel", "error", err)
 		}
 		return
 	}
 	defer func() {
-		if err := targetChannel.Close(); err != nil {
-			log.Error("Failed to close target channel", "error", err)
-		}
-		log.Debug("Target channel closed", "channel_type", newChannel.ChannelType())
+		logChannelCloseError(log, "Failed to close destination channel", destinationChannel.Close())
+		log.Debug("Destination channel closed")
 	}()
 
-	// Accept the channel from client
-	clientChannel, clientReqs, err := newChannel.Accept()
+	// Accept the channel from the source side.
+	sourceChannel, sourceReqs, err := newChannel.Accept()
 	if err != nil {
 		log.Error("Failed to accept channel", "error", err)
 		return
 	}
 	defer func() {
-		if err := clientChannel.Close(); err != nil {
-			log.Error("Failed to close client channel", "error", err)
-		}
-		log.Debug("Client channel closed", "channel_type", newChannel.ChannelType())
+		logChannelCloseError(log, "Failed to close source channel", sourceChannel.Close())
+		log.Debug("Source channel closed")
 	}()
 
-	log.Debug("Channel opened", "channel_type", newChannel.ChannelType())
+	log.Debug("Channel opened")
 
-	targetWg := sync.WaitGroup{}
-	clientWg := sync.WaitGroup{}
+	destinationWg := sync.WaitGroup{}
+	sourceWg := sync.WaitGroup{}
 
 	// Proxy data between channels with proper EOF handling
-	clientWg.Go(func() {
+	sourceWg.Go(func() {
 		defer func() {
-			if err := targetChannel.CloseWrite(); err != nil {
-				log.Error("Failed to close write on target channel", "error", err)
-			}
-			log.Info("Client to target data stream closed")
+			logChannelCloseError(log, "Failed to close write on destination channel", destinationChannel.CloseWrite())
+			log.Debug("Source to destination data stream closed")
 		}()
-		_, err := io.Copy(targetChannel, clientChannel)
+		_, err := io.Copy(destinationChannel, sourceChannel)
 		if err != nil && err != io.EOF {
-			log.Error("Error copying client to target", "error", err)
+			log.Error("Error copying source to destination", "error", err)
 		}
 	})
-	targetWg.Go(func() {
+	destinationWg.Go(func() {
 		defer func() {
-			if err := clientChannel.CloseWrite(); err != nil {
-				log.Error("Failed to close write on client channel", "error", err)
-			}
-			log.Debug("Target to client data stream closed")
+			logChannelCloseError(log, "Failed to close write on source channel", sourceChannel.CloseWrite())
+			log.Debug("Destination to source data stream closed")
 		}()
-		_, err := io.Copy(clientChannel, targetChannel)
+		_, err := io.Copy(sourceChannel, destinationChannel)
 		if err != nil && err != io.EOF {
-			log.Error("Error copying target to client", "error", err)
+			log.Error("Error copying destination to source", "error", err)
 		}
 	})
 
 	// Proxy requests between channels
-	clientWg.Go(func() {
+	sourceWg.Go(func() {
 		defer func() {
-			//targetChannel.Close()
-			log.Debug("Client to target request stream closed")
+			log.Debug("Source to destination request stream closed")
 		}()
-		for req := range clientReqs {
-			log.Debug("Forwarding request from client to target", "request_type", req.Type)
-			reply, err := targetChannel.SendRequest(req.Type, req.WantReply, req.Payload)
+		for req := range sourceReqs {
+			log.Debug("Forwarding request from source to destination", "request_type", req.Type)
+			reply, err := destinationChannel.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
 				return
 			}
 			if req.WantReply {
 				if err := req.Reply(reply, nil); err != nil {
-					log.Error("Failed to reply to client request", "error", err)
+					log.Error("Failed to reply to source request", "error", err)
 				}
 			}
 		}
 	})
-	targetWg.Go(func() {
+	destinationWg.Go(func() {
 		defer func() {
-			//clientChannel.Close()
-			log.Debug("Target to client request stream closed")
+			log.Debug("Destination to source request stream closed")
 		}()
-		for req := range targetReqs {
-			log.Debug("Forwarding request from target to client", "request_type", req.Type)
-			reply, err := clientChannel.SendRequest(req.Type, req.WantReply, req.Payload)
+		for req := range destinationReqs {
+			log.Debug("Forwarding request from destination to source", "request_type", req.Type)
+			reply, err := sourceChannel.SendRequest(req.Type, req.WantReply, req.Payload)
 			if err != nil {
-				log.Error("Failed to forward exit request to client", "error", err)
+				log.Error("Failed to forward channel request to source", "error", err)
 				return
 			}
 			if req.WantReply {
 				if err := req.Reply(reply, nil); err != nil {
-					log.Error("Failed to reply to target request", "error", err)
+					log.Error("Failed to reply to destination request", "error", err)
 				}
 			}
 		}
@@ -576,21 +416,28 @@ func (p *SSHProxy) handleChannel(clientConn ssh.Conn, targetConn ssh.Conn, newCh
 	wg := sync.WaitGroup{}
 	wg.Go(func() {
 		defer func() {
-			if err := clientChannel.Close(); err != nil {
-				log.Error("Failed to close client channel in wait group", "error", err)
-			}
+			logChannelCloseError(log, "Failed to close source channel in wait group", sourceChannel.Close())
 		}()
-		targetWg.Wait()
+		destinationWg.Wait()
 	})
 	wg.Go(func() {
 		defer func() {
-			if err := targetChannel.Close(); err != nil {
-				log.Error("Failed to close target channel in wait group", "error", err)
-			}
+			logChannelCloseError(log, "Failed to close destination channel in wait group", destinationChannel.Close())
 		}()
-		clientWg.Wait()
+		sourceWg.Wait()
 	})
 	wg.Wait()
+}
+
+func logChannelCloseError(log *slog.Logger, message string, err error) {
+	if err == nil || err == io.EOF || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	log.Error(message, "error", err)
+}
+
+func shouldLogConnCloseError(err error) bool {
+	return err != nil && err != io.EOF && !errors.Is(err, net.ErrClosed)
 }
 
 func shouldHandleRequestLocally(req *ssh.Request) (handled bool, replyOK bool, replyPayload []byte) {
@@ -608,10 +455,10 @@ func shouldHandleRequestLocally(req *ssh.Request) (handled bool, replyOK bool, r
 	}
 }
 
-func (p *SSHProxy) handleRequest(targetConn ssh.Conn, req *ssh.Request) {
-	slog.Debug("Handle request", "request_type", req.Type)
+func (p *SSHProxy) handleRequest(sourceName string, destinationName string, destinationConn ssh.Conn, req *ssh.Request) {
+	slog.Debug("Handle request", "source", sourceName, "destination", destinationName, "request_type", req.Type)
 	if handled, reply, replyPayload := shouldHandleRequestLocally(req); handled {
-		slog.Debug("Handled request locally", "request_type", req.Type, "want_reply", req.WantReply)
+		slog.Debug("Handled request locally", "source", sourceName, "destination", destinationName, "request_type", req.Type, "want_reply", req.WantReply)
 		if req.WantReply {
 			if err := req.Reply(reply, replyPayload); err != nil {
 				slog.Error("Failed to reply to local request", "error", err, "request_type", req.Type)
@@ -620,7 +467,7 @@ func (p *SSHProxy) handleRequest(targetConn ssh.Conn, req *ssh.Request) {
 		return
 	}
 
-	reply, replyPayload, err := targetConn.SendRequest(req.Type, req.WantReply, req.Payload)
+	reply, replyPayload, err := destinationConn.SendRequest(req.Type, req.WantReply, req.Payload)
 	if err != nil {
 		slog.Error("Failed to forward request", "error", err)
 		if req.WantReply {
@@ -687,54 +534,4 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 	}
 
 	return signer, nil
-}
-
-// comparePublicKeys compares a provided SSH public key with an authorized key string
-func comparePublicKeys(providedKey ssh.PublicKey, authorizedKeyStr string) bool {
-	// Parse the authorized key string
-	authorizedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorizedKeyStr))
-	if err != nil {
-		slog.Error("Failed to parse authorized key", "error", err)
-		return false
-	}
-
-	// Compare the key types
-	if providedKey.Type() != authorizedKey.Type() {
-		return false
-	}
-
-	// Compare the key data
-	providedKeyData := providedKey.Marshal()
-	authorizedKeyData := authorizedKey.Marshal()
-
-	// Compare byte arrays
-	if len(providedKeyData) != len(authorizedKeyData) {
-		return false
-	}
-
-	for i := 0; i < len(providedKeyData); i++ {
-		if providedKeyData[i] != authorizedKeyData[i] {
-			return false
-		}
-	}
-
-	return true
-}
-
-// verifyPassword verifies a plaintext password against a stored hash
-func verifyPassword(plaintext, hash, hashType string) bool {
-	switch hashType {
-	case "bcrypt":
-		err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plaintext))
-		return err == nil
-	case "sha256":
-		// Simple SHA256 hash (not recommended for production)
-		hasher := sha256.New()
-		hasher.Write([]byte(plaintext))
-		plaintextHash := hex.EncodeToString(hasher.Sum(nil))
-		return plaintextHash == hash
-	default:
-		slog.Warn("Unknown hash type, falling back to plaintext comparison", "hash_type", hashType)
-		return plaintext == hash
-	}
 }
