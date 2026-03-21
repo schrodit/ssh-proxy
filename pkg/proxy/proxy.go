@@ -209,7 +209,7 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPasswordAuthRequest{
 				WebhookAuthRequest: types.WebhookAuthRequest{
 					Username: username,
-					AuthType: "password",
+					AuthType: types.WebhookAuthTypePassword,
 				},
 				Password: string(password),
 			})
@@ -267,7 +267,7 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPublicKeyAuthRequest{
 				WebhookAuthRequest: types.WebhookAuthRequest{
 					Username: username,
-					AuthType: "public_key",
+					AuthType: types.WebhookAuthTypePublicKey,
 				},
 				PublicKey: string(ssh.MarshalAuthorizedKey(key)),
 			})
@@ -334,7 +334,7 @@ func authenticateKeyboardInteractive(username string, sessionID []byte, cfg *con
 	req := &types.WebhookKeyboardInteractiveAuthRequest{
 		WebhookAuthRequest: types.WebhookAuthRequest{
 			Username: username,
-			AuthType: "keyboard_interactive",
+			AuthType: types.WebhookAuthTypeKeyboardInteractive,
 		},
 		SessionID: hex.EncodeToString(sessionID),
 	}

@@ -1,9 +1,17 @@
 package types
 
+type WebhookAuthType string
+
+const (
+	WebhookAuthTypePassword            WebhookAuthType = "password"
+	WebhookAuthTypePublicKey           WebhookAuthType = "publicKey"
+	WebhookAuthTypeKeyboardInteractive WebhookAuthType = "keyboardInteractive"
+)
+
 // WebhookAuthRequest is the shared base JSON body sent to webhook endpoints.
 type WebhookAuthRequest struct {
-	Username string `json:"username"`
-	AuthType string `json:"auth_type"` // "password", "public_key", or "keyboard_interactive"
+	Username string          `json:"username"`
+	AuthType WebhookAuthType `json:"authType"`
 }
 
 // WebhookPasswordAuthRequest is sent for password authentication.
@@ -15,15 +23,15 @@ type WebhookPasswordAuthRequest struct {
 // WebhookPublicKeyAuthRequest is sent for public key authentication.
 type WebhookPublicKeyAuthRequest struct {
 	WebhookAuthRequest
-	PublicKey string `json:"public_key"`
+	PublicKey string `json:"publicKey"`
 }
 
 // WebhookKeyboardInteractiveAuthRequest is sent for keyboard-interactive
 // authentication challenge rounds.
 type WebhookKeyboardInteractiveAuthRequest struct {
 	WebhookAuthRequest
-	SessionID      string   `json:"session_id"`
-	ChallengeRound int      `json:"challenge_round"`
+	SessionID      string   `json:"sessionId"`
+	ChallengeRound int      `json:"challengeRound"`
 	Answers        []string `json:"answers,omitempty"`
 }
 
