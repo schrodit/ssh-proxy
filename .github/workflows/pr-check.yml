@@ -6,9 +6,25 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
     - name: Checkout repository
       uses: actions/checkout@v6
+
+    - name: Check whether PR author is trusted
+      id: trust
+      shell: bash
+      run: |
+        case "${{ github.event.pull_request.author_association }}" in
+          OWNER|MEMBER|COLLABORATOR)
+            echo "is_trusted=true" >> "$GITHUB_OUTPUT"
+            ;;
+          *)
+            echo "is_trusted=false" >> "$GITHUB_OUTPUT"
+            ;;
+        esac
 
     - name: Extract metadata
       id: meta
@@ -18,22 +34,46 @@ jobs:
         tags: |
           type=sha
 
+    - name: Login to GHCR
+      if: steps.trust.outputs.is_trusted == 'true'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Build and push Docker image
+    - name: Build Docker image
       uses: docker/build-push-action@v6
       with:
         context: .
         platforms: linux/amd64,linux/arm64
-        push: false
+        push: ${{ steps.trust.outputs.is_trusted == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Archive and push Helm Chart to GitHub Container Registry
+      if: steps.trust.outputs.is_trusted == 'true'
+      shell: bash
+      run: |
+        helm package ./chart \
+          --version=0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} \
+          --app-version=${{ fromJSON(steps.meta.outputs.json).tag-names[0] }} \
+          -d ./dist/chart
+        helm push ./dist/chart/ssh-proxy-0.0.0-${{ fromJSON(steps.meta.outputs.json).tag-names[0] }}.tgz \
+          oci://ghcr.io/${{ github.repository }}/chart
+
+    - name: Skip artifact publish for untrusted PR authors
+      if: steps.trust.outputs.is_trusted != 'true'
+      run: |
+        echo "Skipping image and chart publish for ${{ github.event.pull_request.user.login }} (${{ github.event.pull_request.author_association }})."
 
   check:
     runs-on: ubuntu-latest
