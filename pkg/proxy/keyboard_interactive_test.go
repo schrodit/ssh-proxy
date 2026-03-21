@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 
@@ -47,7 +48,11 @@ var _ = Describe("Keyboard Interactive Authentication", func() {
 
 			requests := make([]types.WebhookKeyboardInteractiveAuthRequest, 0, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				defer r.Body.Close()
+				defer func() {
+					if err := r.Body.Close(); err != nil {
+						Fail(fmt.Sprintf("Failed to close request body: %v", err))
+					}
+				}()
 
 				var req types.WebhookKeyboardInteractiveAuthRequest
 				err := json.NewDecoder(r.Body).Decode(&req)
