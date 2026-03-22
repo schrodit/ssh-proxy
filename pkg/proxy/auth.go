@@ -36,7 +36,7 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 	route := match.Route
 
 	for _, authMethod := range route.Auth {
-		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
+		if authMethod.Type == config.AuthMethodTypeExternalAuth && authMethod.ExternalAuth != nil {
 			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPasswordAuthRequest{
 				WebhookAuthRequest: types.WebhookAuthRequest{
 					Username: username,
@@ -56,7 +56,7 @@ func (p *SSHProxy) handlePasswordAuth(conn ssh.ConnMetadata, password []byte) (*
 			continue
 		}
 
-		if authMethod.Type != "password" {
+		if authMethod.Type != config.AuthMethodTypePassword {
 			continue
 		}
 
@@ -88,7 +88,7 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 	route := match.Route
 
 	for _, authMethod := range route.Auth {
-		if authMethod.Type == "external_auth" && authMethod.ExternalAuth != nil {
+		if authMethod.Type == config.AuthMethodTypeExternalAuth && authMethod.ExternalAuth != nil {
 			allowed, err := callWebhookAuth(authMethod.ExternalAuth, &types.WebhookPublicKeyAuthRequest{
 				WebhookAuthRequest: types.WebhookAuthRequest{
 					Username: username,
@@ -108,7 +108,7 @@ func (p *SSHProxy) handlePublicKeyAuth(conn ssh.ConnMetadata, key ssh.PublicKey)
 			continue
 		}
 
-		if authMethod.Type != "key" {
+		if authMethod.Type != config.AuthMethodTypeKey {
 			continue
 		}
 
@@ -135,7 +135,7 @@ func (p *SSHProxy) handleKeyboardInteractiveAuth(conn ssh.ConnMetadata, client s
 	challenger := sshKeyboardInteractiveChallenger{challenge: client}
 
 	for _, authMethod := range match.Route.Auth {
-		if authMethod.Type != "keyboard_interactive" || authMethod.ExternalAuth == nil {
+		if authMethod.Type != config.AuthMethodTypeExternalAuth || authMethod.ExternalAuth == nil {
 			continue
 		}
 
@@ -240,12 +240,12 @@ func comparePublicKeys(providedKey ssh.PublicKey, authorizedKeyStr string) bool 
 	return true
 }
 
-func verifyPassword(plaintext, hash, hashType string) bool {
+func verifyPassword(plaintext, hash string, hashType config.PasswordHashType) bool {
 	switch hashType {
-	case "bcrypt":
+	case config.PasswordHashTypeBcrypt:
 		err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(plaintext))
 		return err == nil
-	case "sha256":
+	case config.PasswordHashTypeSHA256:
 		hasher := sha256.New()
 		hasher.Write([]byte(plaintext))
 		plaintextHash := hex.EncodeToString(hasher.Sum(nil))

@@ -109,7 +109,7 @@ routes:
         type: "password"
         password: "fallback-password"
     auth:
-      - type: "external_auth"
+      - type: "externalAuth"
         externalAuth:
           url: "https://auth.example.com/ssh/verify"
           headers:
@@ -122,7 +122,7 @@ routes:
 #### Server Configuration
 - `server.auth.password.enabled`: Whether the proxy SSH server offers password authentication
 - `server.auth.publickey.enabled`: Whether the proxy SSH server offers public key authentication
-- `server.auth.keyboard_interactive.enabled`: Whether the proxy SSH server offers keyboard-interactive authentication
+- `server.auth.keyboardInteractive.enabled`: Whether the proxy SSH server offers keyboard-interactive authentication
 
 **Note**: All server authentication methods are enabled by default when omitted.
 
@@ -163,7 +163,7 @@ target:
 ```
 
 #### Client Authentication Methods
-- `auth[].type`: Authentication type - "password", "key", or "external_auth"
+- `auth[].type`: Authentication type - "password", "key", or "externalAuth"
 - `auth[].password`: Plain text password (not recommended for production)
 - `auth[].passwordHash`: Hashed password for secure storage
 - `auth[].hashType`: Hash algorithm used ("bcrypt" recommended)
@@ -172,15 +172,19 @@ target:
 
 **Note**: Multiple authentication methods can be configured per user. Clients can authenticate using any of the configured methods.
 
+**Note**: Route auth entries must be compatible with the server-level offered authentication methods. For example, a route cannot configure `type: "key"` if `server.auth.publickey.enabled` is set to `false`.
+
+**Note**: `externalAuth` can back password, public key, and keyboard-interactive authentication. At least one of `server.auth.password.enabled`, `server.auth.publickey.enabled`, or `server.auth.keyboardInteractive.enabled` must be enabled when a route uses `type: "externalAuth"`.
+
 ### External Authentication (Webhook)
 
-The `external_auth` type delegates authentication to an external HTTP service. When a client connects, the proxy sends a JSON POST request with the user's credentials to the configured webhook URL. The webhook decides whether to allow or deny the connection based on the HTTP status code it returns.
+The `externalAuth` type delegates authentication to an external HTTP service. When a client connects, the proxy sends a JSON POST request with the user's credentials to the configured webhook URL. The webhook can handle password, public key, and keyboard-interactive flows depending on which SSH authentication methods the server offers.
 
 #### Configuration
 
 ```yaml
 auth:
-  - type: "external_auth"
+  - type: "externalAuth"
     externalAuth:
       url: "https://auth.example.com/ssh/verify"
       headers:
@@ -251,13 +255,13 @@ The response body is ignored.
 
 ### Keyboard-Interactive Authentication
 
-The `keyboard_interactive` type delegates RFC 4256 keyboard-interactive authentication to a dedicated webhook endpoint. This is useful for OTP, MFA, or custom challenge/response flows that need one or more prompt rounds.
+Keyboard-interactive authentication is also handled through `type: "externalAuth"`. If `server.auth.keyboardInteractive.enabled` is enabled, the same webhook configuration can drive RFC 4256 challenge/response flows such as OTP or MFA.
 
 #### Configuration
 
 ```yaml
 auth:
-  - type: "keyboard_interactive"
+  - type: "externalAuth"
     externalAuth:
       url: "https://auth.example.com/ssh/challenge"
       headers:
@@ -282,9 +286,9 @@ The initial challenge request looks like this:
 ```json
 {
   "username": "alice",
-  "auth_type": "keyboard_interactive",
-  "session_id": "deadbeef",
-  "challenge_round": 0
+  "authType": "keyboardInteractive",
+  "sessionId": "deadbeef",
+  "challengeRound": 0
 }
 ```
 
@@ -293,9 +297,9 @@ After the webhook returns a `202 Accepted` challenge, the proxy prompts the SSH 
 ```json
 {
   "username": "alice",
-  "auth_type": "keyboard_interactive",
-  "session_id": "deadbeef",
-  "challenge_round": 1,
+  "authType": "keyboardInteractive",
+  "sessionId": "deadbeef",
+  "challengeRound": 1,
   "answers": ["123456"]
 }
 ```
@@ -331,7 +335,7 @@ http.HandleFunc("/ssh/verify", func(w http.ResponseWriter, r *http.Request) {
 
     var base struct {
         Username string `json:"username"`
-        AuthType string `json:"auth_type"`
+        AuthType string `json:"authType"`
     }
     if err := json.Unmarshal(payload, &base); err != nil {
         http.Error(w, "bad request", http.StatusBadRequest)
@@ -343,7 +347,7 @@ http.HandleFunc("/ssh/verify", func(w http.ResponseWriter, r *http.Request) {
         // Decode payload into your password request type here.
     case "public_key":
         // Decode payload into your public-key request type here.
-    case "keyboard_interactive":
+    case "keyboardInteractive":
         // Decode payload into your keyboard-interactive request type here.
         // Return 202 with questions, 200 on success, or 401 on denial.
     }

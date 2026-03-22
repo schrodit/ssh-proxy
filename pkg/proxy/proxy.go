@@ -32,7 +32,7 @@ type resolvedTarget struct {
 	Host            string
 	Port            int
 	User            string
-	AuthType        string
+	AuthType        config.TargetAuthType
 	AuthPassword    string
 	AuthKeyPath     string
 	HostKeyCallback ssh.HostKeyCallback
@@ -45,7 +45,6 @@ type SSHProxy struct {
 	port          int
 	hostKeyPath   string
 	hostKey       ssh.Signer
-	serverConfig  *ssh.ServerConfig
 }
 
 type proxiedSSHConnection struct {
@@ -70,14 +69,6 @@ func New(configManager *config.ConfigManager, host string, port int, hostKeyPath
 		os.Exit(1)
 	}
 	proxy.hostKey = hostKey
-
-	// Configure SSH server
-	proxy.serverConfig = &ssh.ServerConfig{
-		PasswordCallback:            proxy.handlePasswordAuth,
-		PublicKeyCallback:           proxy.handlePublicKeyAuth,
-		KeyboardInteractiveCallback: proxy.handleKeyboardInteractiveAuth,
-	}
-	proxy.serverConfig.AddHostKey(hostKey)
 
 	return proxy
 }
@@ -211,11 +202,11 @@ func (p *SSHProxy) connectToTarget(target *resolvedTarget) (*proxiedSSHConnectio
 	// Configure client based on target auth type
 	var auth []ssh.AuthMethod
 	switch target.AuthType {
-	case "password":
+	case config.TargetAuthTypePassword:
 		auth = []ssh.AuthMethod{
 			ssh.Password(target.AuthPassword),
 		}
-	case "key":
+	case config.TargetAuthTypeKey:
 		key, err := loadPrivateKey(target.AuthKeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load private key: %w", err)

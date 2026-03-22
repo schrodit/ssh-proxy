@@ -18,7 +18,25 @@ import (
 
 // Config represents the main configuration structure
 type Config struct {
+	Server Server  `yaml:"server,omitempty"`
 	Routes []Route `yaml:"routes"`
+}
+
+// Server represents proxy-wide server settings.
+type Server struct {
+	Auth ServerAuth `yaml:"auth,omitempty"`
+}
+
+// ServerAuth controls which authentication methods the SSH server offers.
+type ServerAuth struct {
+	Password            ServerAuthOption `yaml:"password,omitempty"`
+	PublicKey           ServerAuthOption `yaml:"publickey,omitempty"`
+	KeyboardInteractive ServerAuthOption `yaml:"keyboardInteractive,omitempty"`
+}
+
+// ServerAuthOption configures a single offered authentication method.
+type ServerAuthOption struct {
+	Enabled *bool `yaml:"enabled,omitempty"`
 }
 
 // Route represents a routing rule for a specific username
@@ -39,14 +57,31 @@ type RouteMatch struct {
 	Named  map[string]string // named capture groups
 }
 
+// AuthMethodType identifies a supported route authentication method.
+type AuthMethodType string
+
+const (
+	AuthMethodTypePassword     AuthMethodType = "password"
+	AuthMethodTypeKey          AuthMethodType = "key"
+	AuthMethodTypeExternalAuth AuthMethodType = "externalAuth"
+)
+
+// PasswordHashType identifies the hash algorithm for passwordHash values.
+type PasswordHashType string
+
+const (
+	PasswordHashTypeBcrypt PasswordHashType = "bcrypt"
+	PasswordHashTypeSHA256 PasswordHashType = "sha256"
+)
+
 // AuthMethod represents an authentication method for client connections
 type AuthMethod struct {
-	Type           string         `yaml:"type"`                     // "password", "key", "password_hash", or "external_auth"
-	Password       string         `yaml:"password,omitempty"`       // for password auth (plain text)
-	PasswordHash   string         `yaml:"passwordHash,omitempty"`   // for hashed password auth
-	HashType       string         `yaml:"hashType,omitempty"`       // hash algorithm used (bcrypt, sha256, etc.)
-	AuthorizedKeys []string       `yaml:"authorizedKeys,omitempty"` // for key auth (inline public keys)
-	ExternalAuth   *WebhookConfig `yaml:"externalAuth,omitempty"`   // for external auth via webhook
+	Type           AuthMethodType   `yaml:"type"`                     // "password", "key", or "externalAuth"
+	Password       string           `yaml:"password,omitempty"`       // for password auth (plain text)
+	PasswordHash   string           `yaml:"passwordHash,omitempty"`   // for hashed password auth
+	HashType       PasswordHashType `yaml:"hashType,omitempty"`       // hash algorithm used (bcrypt, sha256, etc.)
+	AuthorizedKeys []string         `yaml:"authorizedKeys,omitempty"` // for key auth (inline public keys)
+	ExternalAuth   *WebhookConfig   `yaml:"externalAuth,omitempty"`   // for external auth via webhook, including keyboard-interactive
 }
 
 // Target represents the target SSH server configuration
@@ -61,10 +96,19 @@ type Target struct {
 
 // TargetAuth represents authentication configuration for target server connections
 type TargetAuth struct {
-	Type     string `yaml:"type"`     // "password", "key", or "password_hash"
-	Password string `yaml:"password"` // for password auth (plain text)
-	KeyPath  string `yaml:"keyPath"`  // for key auth (file path)
+	Type     TargetAuthType `yaml:"type"`     // "password", "key", "passwordHash"
+	Password string         `yaml:"password"` // for password auth (plain text)
+	KeyPath  string         `yaml:"keyPath"`  // for key auth (file path)
 }
+
+// TargetAuthType identifies the authentication method used for target connections.
+type TargetAuthType string
+
+const (
+	TargetAuthTypePassword     TargetAuthType = "password"
+	TargetAuthTypeKey          TargetAuthType = "key"
+	TargetAuthTypePasswordHash TargetAuthType = "passwordHash"
+)
 
 // WebhookConfig represents the configuration for an external authentication webhook.
 // The webhook receives a JSON POST with user credentials and returns whether the
@@ -365,7 +409,11 @@ func (c *Config) Validate() error {
 }
 
 // validAuthTypes are the supported authentication method types.
-var validAuthTypes = []string{"password", "key", "externalAuth"}
+var validAuthTypes = []string{
+	string(AuthMethodTypePassword),
+	string(AuthMethodTypeKey),
+	string(AuthMethodTypeExternalAuth),
+}
 
 func validateServerAuth(auth ServerAuth, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
@@ -380,7 +428,7 @@ func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	switch auth.Type {
-	case "password":
+	case AuthMethodTypePassword:
 		// Must have either password or passwordHash
 		if auth.Password == "" && auth.PasswordHash == "" {
 			allErrs = append(allErrs, field.Required(fldPath.Child("password"), "password or passwordHash is required for type \"password\""))
@@ -397,7 +445,7 @@ func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(fldPath.Child("externalAuth"), "not allowed for type \"password\""))
 		}
 
-	case "key":
+	case AuthMethodTypeKey:
 		// Must have authorizedKeys
 		if len(auth.AuthorizedKeys) == 0 {
 			allErrs = append(allErrs, field.Required(fldPath.Child("authorizedKeys"), "required for type \"key\""))
@@ -416,10 +464,10 @@ func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(fldPath.Child("externalAuth"), "not allowed for type \"key\""))
 		}
 
-	case "external_auth":
+	case AuthMethodTypeExternalAuth:
 		// Must have externalAuth config with url
 		if auth.ExternalAuth == nil {
-			allErrs = append(allErrs, field.Required(fldPath.Child("externalAuth"), "required for type \"external_auth\""))
+			allErrs = append(allErrs, field.Required(fldPath.Child("externalAuth"), "required for type \"externalAuth\""))
 		} else {
 			extPath := fldPath.Child("externalAuth")
 			if auth.ExternalAuth.URL == "" {
@@ -433,16 +481,16 @@ func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
 		}
 		// Forbidden fields
 		if auth.Password != "" {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password"), "not allowed for type \"external_auth\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("password"), "not allowed for type \"externalAuth\""))
 		}
 		if auth.PasswordHash != "" {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("passwordHash"), "not allowed for type \"external_auth\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("passwordHash"), "not allowed for type \"externalAuth\""))
 		}
 		if auth.HashType != "" {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hashType"), "not allowed for type \"external_auth\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("hashType"), "not allowed for type \"externalAuth\""))
 		}
 		if len(auth.AuthorizedKeys) > 0 {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorizedKeys"), "not allowed for type \"external_auth\""))
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("authorizedKeys"), "not allowed for type \"externalAuth\""))
 		}
 
 	case "":
@@ -459,15 +507,15 @@ func validateAuthMethodEnabled(auth AuthMethod, serverAuth ServerAuth, fldPath *
 	allErrs := field.ErrorList{}
 
 	switch auth.Type {
-	case "password":
+	case AuthMethodTypePassword:
 		if !serverAuth.PasswordEnabled() {
 			allErrs = append(allErrs, field.Forbidden(fldPath, "server authentication method \"password\" is disabled"))
 		}
-	case "key":
+	case AuthMethodTypeKey:
 		if !serverAuth.PublicKeyEnabled() {
 			allErrs = append(allErrs, field.Forbidden(fldPath, "server authentication method \"publickey\" is disabled"))
 		}
-	case "externalAuth":
+	case AuthMethodTypeExternalAuth:
 		if !serverAuth.PasswordEnabled() && !serverAuth.PublicKeyEnabled() && !serverAuth.KeyboardInteractiveEnabled() {
 			allErrs = append(allErrs, field.Forbidden(fldPath, "externalAuth requires at least one enabled server authentication method: password, publickey, or keyboardInteractive"))
 		}

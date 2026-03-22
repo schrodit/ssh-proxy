@@ -190,7 +190,7 @@ routes:
 
 				config, err := Load(tmpFile.Name())
 				Expect(err).NotTo(HaveOccurred())
-				Expect(config.Routes[0].Auth[0].Type).To(Equal("externalAuth"))
+				Expect(config.Routes[0].Auth[0].Type).To(Equal(AuthMethodTypeExternalAuth))
 			})
 		})
 
@@ -268,7 +268,7 @@ routes:
 				Expect(err.Error()).To(ContainSubstring("must set either hostKey or insecure: true"))
 			})
 
-			It("should load external_auth config successfully", func() {
+			It("should load externalAuth config successfully", func() {
 				content := `routes:
 - username: alice
   target:
@@ -280,7 +280,7 @@ routes:
       type: password
       password: secret
   auth:
-  - type: external_auth
+  - type: externalAuth
     externalAuth:
       url: "https://auth.example.com/verify"
 `
@@ -290,13 +290,13 @@ routes:
 
 				config, err := Load(tmpFile.Name())
 				Expect(err).NotTo(HaveOccurred())
-				Expect(config.Routes[0].Auth[0].Type).To(Equal("external_auth"))
+				Expect(config.Routes[0].Auth[0].Type).To(Equal(AuthMethodTypeExternalAuth))
 				Expect(config.Routes[0].Auth[0].ExternalAuth.URL).To(Equal("https://auth.example.com/verify"))
 			})
 		})
 
-		Context("with external_auth method", func() {
-			It("should load external_auth config with all fields", func() {
+		Context("with externalAuth method", func() {
+			It("should load externalAuth config with all fields", func() {
 				content := `routes:
 - username: alice
   target:
@@ -308,7 +308,7 @@ routes:
       type: password
       password: secret
   auth:
-  - type: external_auth
+  - type: externalAuth
     externalAuth:
       url: "https://auth.example.com/verify"
       headers:
@@ -331,7 +331,7 @@ routes:
 				Expect(webhook.Timeout).To(Equal("5s"))
 			})
 
-			It("should fail validation when external_auth url is missing", func() {
+			It("should fail validation when externalAuth url is missing", func() {
 				content := `routes:
 - username: alice
   target:
@@ -343,7 +343,7 @@ routes:
       type: password
       password: secret
   auth:
-  - type: external_auth
+  - type: externalAuth
     externalAuth:
       timeout: "5s"
 `
@@ -357,7 +357,7 @@ routes:
 				Expect(err.Error()).To(ContainSubstring("Required value"))
 			})
 
-			It("should fail validation when external_auth config is nil", func() {
+			It("should fail validation when externalAuth config is nil", func() {
 				content := `routes:
 - username: alice
   target:
@@ -369,7 +369,7 @@ routes:
       type: password
       password: secret
   auth:
-  - type: external_auth
+  - type: externalAuth
 `
 				_, err := tmpFile.WriteString(content)
 				Expect(err).NotTo(HaveOccurred())
@@ -380,7 +380,7 @@ routes:
 				Expect(err.Error()).To(ContainSubstring("externalAuth: Required value"))
 			})
 
-			It("should fail validation when external_auth timeout is invalid", func() {
+			It("should fail validation when externalAuth timeout is invalid", func() {
 				content := `routes:
 - username: alice
   target:
@@ -392,7 +392,7 @@ routes:
       type: password
       password: secret
   auth:
-  - type: external_auth
+  - type: externalAuth
     externalAuth:
       url: "https://auth.example.com/verify"
       timeout: "not-a-duration"
@@ -407,7 +407,7 @@ routes:
 				Expect(err.Error()).To(ContainSubstring("invalid duration"))
 			})
 
-			It("should allow external_auth alongside other auth methods", func() {
+			It("should allow externalAuth alongside other auth methods", func() {
 				content := `routes:
 - username: alice
   target:
@@ -421,7 +421,7 @@ routes:
   auth:
   - type: password
     password: alice-secret
-  - type: external_auth
+  - type: externalAuth
     externalAuth:
       url: "https://auth.example.com/verify"
   - type: key
@@ -435,9 +435,9 @@ routes:
 				config, err := Load(tmpFile.Name())
 				Expect(err).NotTo(HaveOccurred())
 				Expect(config.Routes[0].Auth).To(HaveLen(3))
-				Expect(config.Routes[0].Auth[0].Type).To(Equal("password"))
-				Expect(config.Routes[0].Auth[1].Type).To(Equal("external_auth"))
-				Expect(config.Routes[0].Auth[2].Type).To(Equal("key"))
+				Expect(config.Routes[0].Auth[0].Type).To(Equal(AuthMethodTypePassword))
+				Expect(config.Routes[0].Auth[1].Type).To(Equal(AuthMethodTypeExternalAuth))
+				Expect(config.Routes[0].Auth[2].Type).To(Equal(AuthMethodTypeKey))
 			})
 		})
 
@@ -486,15 +486,15 @@ routes:
 				Expect(config.Routes[0].Username).To(Equal("alice"))
 				Expect(config.Routes[0].Target.Host).To(Equal("alice.example.com"))
 				Expect(config.Routes[0].Auth).To(HaveLen(1))
-				Expect(config.Routes[0].Auth[0].Type).To(Equal("password"))
+				Expect(config.Routes[0].Auth[0].Type).To(Equal(AuthMethodTypePassword))
 
 				// Verify bob route
 				Expect(config.Routes[1].Username).To(Equal("bob"))
 				Expect(config.Routes[1].Target.Host).To(Equal("bob.example.com"))
 				Expect(config.Routes[1].Target.Port).To(Equal(2222))
 				Expect(config.Routes[1].Auth).To(HaveLen(2))
-				Expect(config.Routes[1].Auth[0].Type).To(Equal("key"))
-				Expect(config.Routes[1].Auth[1].Type).To(Equal("password"))
+				Expect(config.Routes[1].Auth[0].Type).To(Equal(AuthMethodTypeKey))
+				Expect(config.Routes[1].Auth[1].Type).To(Equal(AuthMethodTypePassword))
 			})
 		})
 
@@ -1052,23 +1052,23 @@ routes:
 				route := Route{
 					Username: "test",
 					Auth: []AuthMethod{
-						{Type: "password", Password: "secret"},
-						{Type: "key", AuthorizedKeys: []string{"ssh-rsa AAA..."}},
-						{Type: "password", PasswordHash: "$2a$10$...", HashType: "bcrypt"},
+						{Type: AuthMethodTypePassword, Password: "secret"},
+						{Type: AuthMethodTypeKey, AuthorizedKeys: []string{"ssh-rsa AAA..."}},
+						{Type: AuthMethodTypePassword, PasswordHash: "$2a$10$...", HashType: PasswordHashTypeBcrypt},
 					},
 				}
 
 				Expect(route.Auth).To(HaveLen(3))
-				Expect(route.Auth[0].Type).To(Equal("password"))
-				Expect(route.Auth[1].Type).To(Equal("key"))
-				Expect(route.Auth[2].Type).To(Equal("password"))
+				Expect(route.Auth[0].Type).To(Equal(AuthMethodTypePassword))
+				Expect(route.Auth[1].Type).To(Equal(AuthMethodTypeKey))
+				Expect(route.Auth[2].Type).To(Equal(AuthMethodTypePassword))
 			})
 
 			It("should support usernameRegex field", func() {
 				route := Route{
 					UsernameRegex: `^(?P<env>dev|prod)-(?P<service>.+)$`,
 					Auth: []AuthMethod{
-						{Type: "password", Password: "secret"},
+						{Type: AuthMethodTypePassword, Password: "secret"},
 					},
 				}
 				Expect(route.UsernameRegex).To(Equal(`^(?P<env>dev|prod)-(?P<service>.+)$`))
@@ -1080,11 +1080,11 @@ routes:
 				authTypes := []struct {
 					name     string
 					auth     TargetAuth
-					expected string
+					expected TargetAuthType
 				}{
-					{"password auth", TargetAuth{Type: "password", Password: "secret"}, "password"},
-					{"key auth", TargetAuth{Type: "key", KeyPath: "/path/to/key"}, "key"},
-					{"password_hash auth", TargetAuth{Type: "password_hash"}, "password_hash"},
+					{"password auth", TargetAuth{Type: TargetAuthTypePassword, Password: "secret"}, TargetAuthTypePassword},
+					{"key auth", TargetAuth{Type: TargetAuthTypeKey, KeyPath: "/path/to/key"}, TargetAuthTypeKey},
+					{"passwordHash auth", TargetAuth{Type: TargetAuthTypePasswordHash}, TargetAuthTypePasswordHash},
 				}
 
 				for _, authType := range authTypes {

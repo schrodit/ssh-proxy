@@ -92,7 +92,7 @@ var _ = Describe("Keyboard Interactive Authentication", func() {
 
 			Expect(requests).To(HaveLen(2))
 			Expect(requests[0].Username).To(Equal("alice"))
-			Expect(requests[0].AuthType).To(Equal("keyboard_interactive"))
+			Expect(requests[0].AuthType).To(Equal(types.WebhookAuthTypeKeyboardInteractive))
 			Expect(requests[0].SessionID).To(Equal("deadbeef"))
 			Expect(requests[0].ChallengeRound).To(Equal(0))
 			Expect(requests[0].Answers).To(BeEmpty())

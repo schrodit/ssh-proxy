@@ -79,7 +79,7 @@ routes:
       type: "password"
       password: "fallback-password"
   auth:
-  - type: "external_auth"
+  - type: "externalAuth"
     externalAuth:
       url: "https://auth.example.com/ssh/verify"
       headers:
