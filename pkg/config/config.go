@@ -75,6 +75,22 @@ type WebhookConfig struct {
 	Timeout string            `yaml:"timeout,omitempty"` // Go duration string (e.g., "5s", "30s"); default "5s"
 }
 
+func (o ServerAuthOption) IsEnabled() bool {
+	return o.Enabled == nil || *o.Enabled
+}
+
+func (a ServerAuth) PasswordEnabled() bool {
+	return a.Password.IsEnabled()
+}
+
+func (a ServerAuth) PublicKeyEnabled() bool {
+	return a.PublicKey.IsEnabled()
+}
+
+func (a ServerAuth) KeyboardInteractiveEnabled() bool {
+	return a.KeyboardInteractive.IsEnabled()
+}
+
 // ConfigManager manages configuration with dynamic reloading and concurrent access
 type ConfigManager struct {
 	mu         sync.RWMutex
@@ -313,6 +329,9 @@ func LoadWithData(path string) (*Config, []byte, error) {
 func (c *Config) Validate() error {
 	allErrs := field.ErrorList{}
 	routesPath := field.NewPath("routes")
+	serverAuthPath := field.NewPath("server", "auth")
+
+	allErrs = append(allErrs, validateServerAuth(c.Server.Auth, serverAuthPath)...)
 
 	for i := range c.Routes {
 		route := &c.Routes[i]
@@ -332,6 +351,7 @@ func (c *Config) Validate() error {
 		for j, auth := range route.Auth {
 			authPath := routePath.Child("auth").Index(j)
 			allErrs = append(allErrs, validateAuthMethod(auth, authPath)...)
+			allErrs = append(allErrs, validateAuthMethodEnabled(auth, c.Server.Auth, authPath)...)
 		}
 
 		// Validate that either hostKey or insecure is explicitly set
@@ -345,7 +365,15 @@ func (c *Config) Validate() error {
 }
 
 // validAuthTypes are the supported authentication method types.
-var validAuthTypes = []string{"password", "key", "external_auth"}
+var validAuthTypes = []string{"password", "key", "externalAuth"}
+
+func validateServerAuth(auth ServerAuth, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if !auth.PasswordEnabled() && !auth.PublicKeyEnabled() && !auth.KeyboardInteractiveEnabled() {
+		allErrs = append(allErrs, field.Invalid(fldPath, nil, "at least one server authentication method must be enabled"))
+	}
+	return allErrs
+}
 
 // validateAuthMethod validates a single auth method entry using field path errors.
 func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
@@ -422,6 +450,27 @@ func validateAuthMethod(auth AuthMethod, fldPath *field.Path) field.ErrorList {
 
 	default:
 		allErrs = append(allErrs, field.NotSupported(fldPath.Child("type"), auth.Type, validAuthTypes))
+	}
+
+	return allErrs
+}
+
+func validateAuthMethodEnabled(auth AuthMethod, serverAuth ServerAuth, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	switch auth.Type {
+	case "password":
+		if !serverAuth.PasswordEnabled() {
+			allErrs = append(allErrs, field.Forbidden(fldPath, "server authentication method \"password\" is disabled"))
+		}
+	case "key":
+		if !serverAuth.PublicKeyEnabled() {
+			allErrs = append(allErrs, field.Forbidden(fldPath, "server authentication method \"publickey\" is disabled"))
+		}
+	case "externalAuth":
+		if !serverAuth.PasswordEnabled() && !serverAuth.PublicKeyEnabled() && !serverAuth.KeyboardInteractiveEnabled() {
+			allErrs = append(allErrs, field.Forbidden(fldPath, "externalAuth requires at least one enabled server authentication method: password, publickey, or keyboardInteractive"))
+		}
 	}
 
 	return allErrs

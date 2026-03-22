@@ -56,6 +56,144 @@ var _ = Describe("Config Package", func() {
 			})
 		})
 
+		Context("with server-level authentication settings", func() {
+			It("should enable all offered authentication methods by default", func() {
+				content := `routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-secret
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Server.Auth.PasswordEnabled()).To(BeTrue())
+				Expect(config.Server.Auth.PublicKeyEnabled()).To(BeTrue())
+				Expect(config.Server.Auth.KeyboardInteractiveEnabled()).To(BeTrue())
+			})
+
+			It("should fail validation when a route offers password while password auth is disabled server-wide", func() {
+				content := `server:
+  auth:
+    password:
+      enabled: false
+routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: password
+    password: alice-secret
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("server authentication method \"password\" is disabled"))
+			})
+
+			It("should fail validation when a route offers public key while publickey auth is disabled server-wide", func() {
+				content := `server:
+  auth:
+    publickey:
+      enabled: false
+routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: key
+    authorizedKeys:
+    - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest"
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("server authentication method \"publickey\" is disabled"))
+			})
+
+			It("should fail validation when all server authentication methods are disabled", func() {
+				content := `server:
+  auth:
+    password:
+      enabled: false
+    publickey:
+      enabled: false
+    keyboardInteractive:
+      enabled: false
+routes: []
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				_, err = Load(tmpFile.Name())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("at least one server authentication method must be enabled"))
+			})
+
+			It("should allow externalAuth routes when only keyboardInteractive is enabled server-wide", func() {
+				content := `server:
+  auth:
+    password:
+      enabled: false
+    publickey:
+      enabled: false
+    keyboardInteractive:
+      enabled: true
+routes:
+- username: alice
+  target:
+    host: example.com
+    port: 22
+    user: alice
+    insecure: true
+    auth:
+      type: password
+      password: secret
+  auth:
+  - type: externalAuth
+    externalAuth:
+      url: "https://auth.example.com/challenge"
+`
+				_, err := tmpFile.WriteString(content)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tmpFile.Close()).NotTo(HaveOccurred())
+
+				config, err := Load(tmpFile.Name())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.Routes[0].Auth[0].Type).To(Equal("externalAuth"))
+			})
+		})
+
 		Context("with target hostKey and insecure fields", func() {
 			It("should load hostKey from config", func() {
 				content := `routes:

@@ -117,7 +117,7 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 	}()
 
 	// Perform SSH handshake
-	sshConn, chans, reqs, err := ssh.NewServerConn(conn, p.serverConfig)
+	sshConn, chans, reqs, err := ssh.NewServerConn(conn, p.buildServerConfig())
 	if err != nil {
 		slog.Error("Failed to handshake", "error", err)
 		return
@@ -185,6 +185,24 @@ func (p *SSHProxy) handleConnection(conn net.Conn) {
 	p.proxySSHConnection(sshConn, targetConn, chans, reqs)
 
 	slog.Info("Session ended", "username", username)
+}
+
+func (p *SSHProxy) buildServerConfig() *ssh.ServerConfig {
+	cfg := &ssh.ServerConfig{}
+	authConfig := p.configManager.GetConfig().Server.Auth
+
+	if authConfig.PasswordEnabled() {
+		cfg.PasswordCallback = p.handlePasswordAuth
+	}
+	if authConfig.PublicKeyEnabled() {
+		cfg.PublicKeyCallback = p.handlePublicKeyAuth
+	}
+	if authConfig.KeyboardInteractiveEnabled() {
+		cfg.KeyboardInteractiveCallback = p.handleKeyboardInteractiveAuth
+	}
+
+	cfg.AddHostKey(p.hostKey)
+	return cfg
 }
 
 func (p *SSHProxy) connectToTarget(target *resolvedTarget) (*proxiedSSHConnection, error) {

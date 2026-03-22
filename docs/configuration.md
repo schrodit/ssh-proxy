@@ -4,6 +4,15 @@ The server is configured using a YAML configuration file (default: `config.yaml`
 
 ```yaml
 # SSH Proxy Configuration - Routing rules based on username
+server:
+  auth:
+    password:
+      enabled: true
+    publickey:
+      enabled: true
+    keyboardInteractive:
+      enabled: true
+
 routes:
   # Alice: Password authentication only using bcrypt hash
   - username: "alice"
@@ -59,6 +68,22 @@ routes:
         authorizedKeys:
           - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDxyz... charlie@work"
 
+  # Dana: Keyboard-interactive challenge flow. Only available via externalAuth
+  - username: "dana"
+    target:
+      host: "vpn.internal"
+      port: 22
+      user: "dana"
+      insecure: true
+      auth:
+        type: "password"
+        password: "dana-target-password"
+    auth:
+      - type: "externalAuth"
+        externalAuth:
+          url: "https://auth.example.com/ssh/challenge"
+          timeout: "10s"
+
   # Dynamic routing with regex: Match usernames like "dev-myapp", "prod-api"
   - usernameRegex: "^(?P<env>dev|staging|prod)-(?P<service>.+)$"
     target:
@@ -93,6 +118,15 @@ routes:
 ```
 
 ### Configuration Fields
+
+#### Server Configuration
+- `server.auth.password.enabled`: Whether the proxy SSH server offers password authentication
+- `server.auth.publickey.enabled`: Whether the proxy SSH server offers public key authentication
+- `server.auth.keyboard_interactive.enabled`: Whether the proxy SSH server offers keyboard-interactive authentication
+
+**Note**: All server authentication methods are enabled by default when omitted.
+
+**Note**: At least one server authentication method must remain enabled or the configuration will fail to load.
 
 #### Route Configuration
 - `username`: The username that will be authenticated and routed (exact match)

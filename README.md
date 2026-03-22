@@ -91,6 +91,8 @@ routes:
         password: "shared-secret"
 ```
 
+The `server.auth` block controls which SSH authentication methods the proxy advertises. All three methods are enabled by default, and route-level auth entries must only use methods that are enabled there.
+
 ## Quick Start
 
 ### Try It Out with Docker Compose
